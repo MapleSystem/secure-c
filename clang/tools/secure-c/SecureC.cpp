@@ -91,6 +91,31 @@ public:
     return true;
   }
 
+  bool VisitMemberExpr(MemberExpr *ME) {
+    if (DeclRefExpr *DRE =
+            dyn_cast<DeclRefExpr>(ME->getBase()->IgnoreParenImpCasts())) {
+      if (!isNonnull(DRE->getType())) {
+        reportIllegalAccess(DRE->getType(), ME, *Context);
+      }
+    }
+
+    return true;
+  }
+
+  bool VisitUnaryOperator(UnaryOperator *UO) {
+    if (UO->getOpcode() != UO_Deref) {
+      return true;
+    }
+    if (DeclRefExpr *DRE =
+             dyn_cast<DeclRefExpr>(UO->getSubExpr()->IgnoreParenImpCasts())) {
+      if (!isNonnull(DRE->getType())) {
+        reportIllegalAccess(DRE->getType(), UO, *Context);
+      }
+    }
+
+    return true;
+  }
+
 private:
   ASTContext *Context;
 
@@ -104,6 +129,21 @@ private:
 
     auto DB = DE.Report(E->getBeginLoc(), ID);
     DB.AddString(E->getType().getAsString());
+    DB.AddString(Ty.getAsString());
+
+    const auto Range =
+        clang::CharSourceRange::getCharRange(E->getSourceRange());
+    DB.AddSourceRange(Range);
+  }
+
+  void reportIllegalAccess(const QualType &Ty, const Expr *E,
+                           const ASTContext &Context) {
+    auto &DE = Context.getDiagnostics();
+    const auto ID =
+        DE.getCustomDiagID(clang::DiagnosticsEngine::Error,
+                           "illegal access of nullable pointer type '%0'");
+
+    auto DB = DE.Report(E->getBeginLoc(), ID);
     DB.AddString(Ty.getAsString());
 
     const auto Range =
