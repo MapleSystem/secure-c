@@ -31,6 +31,8 @@ class SecureCVisitor : public RecursiveASTVisitor<SecureCVisitor> {
 public:
   explicit SecureCVisitor(ASTContext *Context) : Context(Context) {}
 
+  bool shouldTraversePostOrder() { return true; }
+
   bool TraverseDecl(Decl *D) {
     // Don't traverse in system header files
     SourceLocation Loc = D->getLocation();
@@ -44,7 +46,7 @@ public:
     return true;
   }
 
-  bool VisitFunctionDecl(FunctionDecl *FD) {
+  bool TraverseFunctionDecl(FunctionDecl *FD) {
     for (unsigned int i = 0; i < FD->getNumParams(); i++) {
       const ParmVarDecl *Param = FD->getParamDecl(i);
       const QualType QT = Param->getType();
@@ -55,10 +57,67 @@ public:
       }
     }
 
+    // Create a function scope for checked decls
+    CheckedDecls.push_back(std::map<Decl *, bool>());
+
+    RecursiveASTVisitor<SecureCVisitor>::TraverseFunctionDecl(FD);
+
+    // Remove the function scoped checked decls
+    CheckedDecls.pop_back();
+
+    return true;
+  }
+
+  bool TraverseIfStmt(IfStmt *If) {
+    CheckedDecls.push_back(std::map<Decl *, bool>());
+
+    if (If->hasInitStorage()) {
+      TraverseStmt(If->getInit());
+    }
+
+    if (If->hasVarStorage()) {
+      TraverseStmt(If->getConditionVariableDeclStmt());
+    }
+
+    TraverseStmt(If->getCond());
+    TraverseStmt(If->getThen());
+
+    if (If->hasElseStorage()) {
+      // In the else case, the values are switched
+      // (decls known to be NULL in the if body are non-null in the else)
+      for (auto it = CheckedDecls.back().begin();
+           it != CheckedDecls.back().end(); ++it) {
+        it->second = !it->second;
+      }
+      TraverseStmt(If->getElse());
+    }
+    CheckedDecls.pop_back();
+
     return true;
   }
 
   bool VisitBinaryOperator(BinaryOperator *BO) {
+    if (BO->getOpcode() == BO_EQ || BO->getOpcode() == BO_NE) {
+      // x == NULL OR x != NULL
+      if (BO->getRHS()->isNullPointerConstant(
+              *Context, Expr::NPC_NeverValueDependent) != Expr::NPCK_NotNull) {
+        if (DeclRefExpr *LHS =
+                dyn_cast<DeclRefExpr>(BO->getLHS()->IgnoreParenImpCasts())) {
+          CheckedDecls.back()[LHS->getDecl()] = BO->getOpcode() == BO_EQ;
+        }
+      }
+      // NULL == x OR NULL != x
+      if (BO->getLHS()->isNullPointerConstant(
+              *Context, Expr::NPC_NeverValueDependent) != Expr::NPCK_NotNull) {
+        if (DeclRefExpr *RHS =
+                dyn_cast<DeclRefExpr>(BO->getRHS()->IgnoreParenImpCasts())) {
+          CheckedDecls.back()[RHS->getDecl()] = BO->getOpcode() == BO_EQ;
+        }
+      }
+
+      return true;
+    }
+
     if (BO->getOpcode() != BO_Assign) {
       return true;
     }
@@ -70,6 +129,7 @@ public:
         reportIllegalCast(LHS->getType(), RHS, *Context);
       }
     }
+
     return true;
   }
 
@@ -92,11 +152,9 @@ public:
   }
 
   bool VisitMemberExpr(MemberExpr *ME) {
-    if (DeclRefExpr *DRE =
-            dyn_cast<DeclRefExpr>(ME->getBase()->IgnoreParenImpCasts())) {
-      if (!isNonnull(DRE->getType())) {
-        reportIllegalAccess(DRE->getType(), ME, *Context);
-      }
+    Expr *Base = ME->getBase();
+    if (!isNonnullCompatible(Base)) {
+      reportIllegalAccess(Base->getType(), ME, *Context);
     }
 
     return true;
@@ -107,8 +165,8 @@ public:
       return true;
     }
     if (DeclRefExpr *DRE =
-             dyn_cast<DeclRefExpr>(UO->getSubExpr()->IgnoreParenImpCasts())) {
-      if (!isNonnull(DRE->getType())) {
+            dyn_cast<DeclRefExpr>(UO->getSubExpr()->IgnoreParenImpCasts())) {
+      if (!isNonnullCompatible(DRE)) {
         reportIllegalAccess(DRE->getType(), UO, *Context);
       }
     }
@@ -116,8 +174,28 @@ public:
     return true;
   }
 
+  bool VisitReturnStmt(ReturnStmt *RS) {
+    // If we return inside of an if stmt, put the inverse of the if's checked
+    // decls into the function scope. For example:
+    //   if (x == NULL) { return 0; }
+    // After this if stmt, we are sure that x is non-null for the rest of the
+    // function.
+    if (CheckedDecls.size() > 1) {
+      std::map<Decl *, bool> &IfScope = CheckedDecls.back();
+      std::map<Decl *, bool> &FuncScope = CheckedDecls.front();
+      for (auto const &CD : IfScope) {
+        FuncScope[CD.first] = !CD.second;
+      }
+    }
+    return true;
+  }
+
 private:
   ASTContext *Context;
+
+  // Decls that have been checked in this scope.
+  // true = known to be NULL, false = known to be non-NULL
+  std::vector<std::map<Decl *, bool>> CheckedDecls;
 
   void reportIllegalCast(const QualType &Ty, const Expr *E,
                          const ASTContext &Context) {
@@ -156,7 +234,7 @@ private:
     auto &DE = Context.getDiagnostics();
     const auto ID = DE.getCustomDiagID(clang::DiagnosticsEngine::Error,
                                        "pointer parameter is not annotated "
-                                       "with either `_Nonnull` or `_Nullable`");
+                                       "with either '_Nonnull' or '_Nullable'");
 
     auto DB = DE.Report(Param->getTypeSpecStartLoc(), ID);
     const auto Range =
@@ -182,18 +260,31 @@ private:
     return false;
   }
 
-  bool isNonnullCompatible(const Expr *E) {
-    // Is the arg also attributed with nonnull?
-    if (auto attributed = dyn_cast<AttributedType>(E->getType().getTypePtr())) {
-      if (attributed->getImmediateNullability() == NullabilityKind::NonNull) {
+  bool isNonnullCompatible(Expr const *E) {
+    // Strip off
+    Expr const *Stripped = E->IgnoreParenImpCasts();
+
+    // Is the expr attributed with nonnull?
+    if (isNonnull(Stripped->getType())) {
+      return true;
+    }
+
+    // Is the expr taking an address of an object?
+    if (auto UO = dyn_cast<clang::UnaryOperator>(Stripped)) {
+      if (UO->getOpcode() == UO_AddrOf) {
         return true;
       }
     }
 
-    // Is the arg taking an address of an object?
-    if (auto UO = dyn_cast<clang::UnaryOperator>(E)) {
-      if (UO->getOpcode() == UO_AddrOf) {
-        return true;
+    // Is the expr referring to a known non-null decl?
+    if (DeclRefExpr const *DRE = dyn_cast<DeclRefExpr>(Stripped)) {
+      Decl const *D = DRE->getDecl();
+      for (auto const &CDMap : CheckedDecls) {
+        for (auto const &CD : CDMap) {
+          if (D == CD.first) {
+            return !CD.second;
+          }
+        }
       }
     }
 
