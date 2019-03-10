@@ -3221,3 +3221,15 @@ def SecureBuffer : InheritableAttr {
   let LateParsed = 1;
   let TemplateDependent = 1;
 }
+
+def ValueRange : InheritableAttr {
+  // Does not have a [[]] spelling because this attribute requires the ability
+  // to parse function arguments but the attribute is not written in the type
+  // position.
+  let Spellings = [GNU<"value_range">];
+  let Subjects = SubjectList<[Function]>;
+  let Documentation = [Undocumented];
+  let Args = [ExprArgument<"Target">, ExprArgument<"Min">, ExprArgument<"Max">];
+  let LateParsed = 1;
+  let TemplateDependent = 1;
+}

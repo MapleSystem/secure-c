@@ -6444,6 +6444,62 @@ static void handleFortifyStdLib(Sema &S, Decl *D, const ParsedAttr &AL) {
       AL.getAttributeSpellingListIndex()));
 }
 
+static void handleValueRange(Sema &S, Decl *D, const ParsedAttr &AL) {
+  const auto *FD = cast<FunctionDecl>(D);
+
+  if (!isFunctionOrMethod(D)) {
+    S.Diag(D->getLocation(), diag::warn_attribute_wrong_decl_type)
+        << AL << ExpectedFunctionOrMethod;
+    return;
+  }
+
+  Expr *Target = AL.getArgAsExpr(0);
+  Expr *Min = AL.getArgAsExpr(1);
+  Expr *Max = AL.getArgAsExpr(2);
+
+  if (!isa<DeclRefExpr>(Target)) {
+    S.Diag(Target->getExprLoc(), diag::err_attribute_argument_n_type)
+        << AL << 1 << AANT_ArgumentParamInteger;
+    return;
+  }
+  auto *DRE = cast<DeclRefExpr>(Target);
+
+  if (!isa<ParmVarDecl>(DRE->getDecl())) {
+    S.Diag(Target->getExprLoc(), diag::err_attribute_argument_n_type)
+        << AL << 1 << AANT_ArgumentParamInteger;
+    return;
+  }
+  auto *PVD = cast<ParmVarDecl>(DRE->getDecl());
+
+  if (PVD->getParentFunctionOrMethod() != FD) {
+    S.Diag(Target->getExprLoc(), diag::err_attribute_argument_n_type)
+        << AL << 1 << AANT_ArgumentParamInteger;
+    return;
+  }
+
+  if (!PVD->getType()->isIntegerType()) {
+    S.Diag(Target->getExprLoc(), diag::err_attribute_argument_n_type)
+        << AL << 1 << AANT_ArgumentParamInteger;
+    return;
+  }
+
+  if (!Min->getType()->isIntegerType()) {
+    S.Diag(Min->getExprLoc(), diag::err_attribute_argument_n_type)
+        << AL << 2 << AANT_ArgumentExprIntType;
+    return;
+  }
+
+  if (!Max->getType()->isIntegerType()) {
+    S.Diag(Max->getExprLoc(), diag::err_attribute_argument_n_type)
+        << AL << 3 << AANT_ArgumentExprIntType;
+    return;
+  }
+
+  PVD->addAttr(::new (S.Context)
+                 ValueRangeAttr(AL.getRange(), S.Context, Target, Min, Max,
+                                AL.getAttributeSpellingListIndex()));
+}
+
 static void handleSecureBuffer(Sema &S, Decl *D, const ParsedAttr &AL) {
   const auto *FD = cast<FunctionDecl>(D);
 
@@ -7229,6 +7285,10 @@ static void ProcessDeclAttribute(Sema &S, Scope *scope, Decl *D,
 
   case ParsedAttr::AT_SecureBuffer:
     handleSecureBuffer(S, D, AL);
+    break;
+
+  case ParsedAttr::AT_ValueRange:
+    handleValueRange(S, D, AL);
     break;
 
   }

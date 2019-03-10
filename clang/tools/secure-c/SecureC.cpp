@@ -129,6 +129,11 @@ bool SecureCVisitor::VisitVarDecl(VarDecl *VD) {
 }
 
 bool SecureCVisitor::TraverseFunctionDecl(FunctionDecl *FD) {
+  // Check for value-range attribute
+  if (hasValueRange(FD)) {
+    llvm::errs() << FD->getName() << " has a value range!!!\n";
+  }
+
   for (unsigned int i = 0; i < FD->getNumParams(); i++) {
     const ParmVarDecl *Param = FD->getParamDecl(i);
     const QualType QT = Param->getType();
@@ -803,6 +808,10 @@ bool SecureCVisitor::isNullabilityAnnotated(const QualType &QT) {
     if (AType->getImmediateNullability() != None)
       return true;
   return false;
+}
+
+bool SecureCVisitor::hasValueRange(const FunctionDecl *FD) {
+  return FD->hasAttr<ValueRangeAttr>();
 }
 
 bool SecureCVisitor::isNonnullCompatible(Expr const *E) {

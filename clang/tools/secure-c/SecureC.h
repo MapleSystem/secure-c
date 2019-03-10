@@ -70,6 +70,7 @@ private:
   void reportSecureBufferOutOfRange(const Expr *Access, const Expr *Index);
 
   bool isNullabilityAnnotated(const QualType &QT);
+  bool hasValueRange(const FunctionDecl *FD);
   bool isNonnullCompatible(Expr const *E);
 };
 
