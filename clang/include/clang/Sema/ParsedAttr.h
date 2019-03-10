@@ -984,7 +984,10 @@ enum AttributeArgumentNType {
   AANT_ArgumentIntOrBool,
   AANT_ArgumentIntegerConstant,
   AANT_ArgumentString,
-  AANT_ArgumentIdentifier
+  AANT_ArgumentIdentifier,
+  AANT_ArgumentParamPointer,
+  AANT_ArgumentParamInteger,
+  AANT_ArgumentExprIntType
 };
 
 /// These constants match the enumerated choices of

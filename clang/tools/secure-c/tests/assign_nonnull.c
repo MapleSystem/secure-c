@@ -4,7 +4,6 @@ int foo(unsigned int * _Nonnull x) {
 }
 
 //bats @test "assign_nonnull.c: assign a non-null pointer" {
-//bats run secure-c assign_nonnull.c --
+//bats run secure-c -secure-buffer=false assign_nonnull.c --
 //bats [ $status = 0 ]
 //bats }
-

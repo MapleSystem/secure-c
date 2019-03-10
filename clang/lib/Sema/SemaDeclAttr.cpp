@@ -6444,6 +6444,55 @@ static void handleFortifyStdLib(Sema &S, Decl *D, const ParsedAttr &AL) {
       AL.getAttributeSpellingListIndex()));
 }
 
+static void handleSecureBuffer(Sema &S, Decl *D, const ParsedAttr &AL) {
+  const auto *FD = cast<FunctionDecl>(D);
+
+  if (!isFunctionOrMethod(D)) {
+    S.Diag(D->getLocation(), diag::warn_attribute_wrong_decl_type)
+        << AL << ExpectedFunctionOrMethod;
+    return;
+  }
+
+  Expr *Buffer = AL.getArgAsExpr(0);
+  Expr *Length = AL.getArgAsExpr(1);
+
+  if (!isa<DeclRefExpr>(Buffer)) {
+    S.Diag(Buffer->getExprLoc(), diag::err_attribute_argument_n_type)
+        << AL << 1 << AANT_ArgumentParamPointer;
+    return;
+  }
+  auto *DRE = cast<DeclRefExpr>(Buffer);
+
+  if (!isa<ParmVarDecl>(DRE->getDecl())) {
+    S.Diag(Buffer->getExprLoc(), diag::err_attribute_argument_n_type)
+        << AL << 1 << AANT_ArgumentParamPointer;
+    return;
+  }
+  auto *PVD = cast<ParmVarDecl>(DRE->getDecl());
+
+  if (PVD->getParentFunctionOrMethod() != FD) {
+    S.Diag(Buffer->getExprLoc(), diag::err_attribute_argument_n_type)
+        << AL << 1 << AANT_ArgumentParamPointer;
+    return;
+  }
+
+  if (!PVD->getType()->isPointerType()) {
+    S.Diag(Buffer->getExprLoc(), diag::err_attribute_argument_n_type)
+        << AL << 1 << AANT_ArgumentParamPointer;
+    return;
+  }
+
+  if (!Length->getType()->isIntegerType()) {
+    S.Diag(Length->getExprLoc(), diag::err_attribute_argument_n_type)
+        << AL << 2 << AANT_ArgumentExprIntType;
+    return;
+  }
+
+  PVD->addAttr(::new (S.Context)
+                 SecureBufferAttr(AL.getRange(), S.Context, Buffer, Length,
+                                  AL.getAttributeSpellingListIndex()));
+}
+
 //===----------------------------------------------------------------------===//
 // Top Level Sema Entry Points
 //===----------------------------------------------------------------------===//
@@ -7177,6 +7226,11 @@ static void ProcessDeclAttribute(Sema &S, Scope *scope, Decl *D,
   case ParsedAttr::AT_FortifyStdLib:
     handleFortifyStdLib(S, D, AL);
     break;
+
+  case ParsedAttr::AT_SecureBuffer:
+    handleSecureBuffer(S, D, AL);
+    break;
+
   }
 }
 

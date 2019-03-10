@@ -45,7 +45,8 @@ private:
   std::map<uint64_t, bool> InsertedChecks;
   SecureCStatistics *Stats;
 
-  void insertRuntimeCheck(const Expr *Pointer);
+  void insertRuntimeNullCheck(const Expr *Pointer);
+  void insertRuntimeRangeCheck(const Expr *Val, const Expr *Cond);
   StringRef getSourceString(const Expr *Pointer, CharSourceRange &Range);
   bool isDuplicateReplacement(Replacement &Old, Replacement &New);
   bool isExistingReplacementInside(Replacement &Old, Replacement &New);
@@ -63,6 +64,10 @@ private:
   void warnRedundantCheck(const Expr *Check);
   void reportFailedReplacement(const Expr *Pointer, std::string ErrMsg);
   void reportFailedHeaderInsert(std::string ErrMsg);
+  void reportMissingSecureBuffer(const Expr *Pointer, const Expr *Access);
+  void reportUncheckedSecureBuffer(const Expr *Access, const Expr *Index,
+                                   const Expr *Length, const Expr *Cond);
+  void reportSecureBufferOutOfRange(const Expr *Access, const Expr *Index);
 
   bool isNullabilityAnnotated(const QualType &QT);
   bool isNonnullCompatible(Expr const *E);

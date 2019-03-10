@@ -3208,3 +3208,16 @@ def ObjCExternallyRetained : InheritableAttr {
   let Subjects = SubjectList<[NonParmVar, Function, Block, ObjCMethod]>;
   let Documentation = [ObjCExternallyRetainedDocs];
 }
+
+// Secure-C attributes for implementing secure programming features
+def SecureBuffer : InheritableAttr {
+  // Does not have a [[]] spelling because this attribute requires the ability
+  // to parse function arguments but the attribute is not written in the type
+  // position.
+  let Spellings = [GNU<"secure_buffer">];
+  let Subjects = SubjectList<[Function]>;
+  let Documentation = [Undocumented];
+  let Args = [ExprArgument<"Buffer">, ExprArgument<"Length">];
+  let LateParsed = 1;
+  let TemplateDependent = 1;
+}

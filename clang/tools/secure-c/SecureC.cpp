@@ -54,6 +54,11 @@ static llvm::cl::opt<bool>
                llvm::cl::desc("Collect statistics about the analysis."),
                llvm::cl::cat(SecureCCategory));
 
+static llvm::cl::opt<bool>
+    SecureBuffer("secure-buffer",
+                 llvm::cl::desc("Check for proper use of secure buffers."),
+                 llvm::cl::init(true), llvm::cl::cat(SecureCCategory));
+
 bool isAnnotatedNonnull(const QualType &QT) {
   if (auto AType = dyn_cast<AttributedType>(QT.getTypePtr()))
     if (AType->getImmediateNullability() == NullabilityKind::NonNull)
@@ -346,6 +351,78 @@ bool SecureCVisitor::VisitArraySubscriptExpr(ArraySubscriptExpr *AE) {
   if (!isNonnullCompatible(Base))
     reportIllegalAccess(Base, AE, Context);
 
+  // Check secure buffer requirements
+  Expr *Stripped = Base->IgnoreParenCasts();
+  if (SecureBuffer && Stripped->getType()->isPointerType()) {
+    if (DeclRefExpr *DRE = dyn_cast<DeclRefExpr>(Base->IgnoreParenImpCasts())) {
+      if (SecureBufferAttr *SB = DRE->getDecl()->getAttr<SecureBufferAttr>()) {
+        Expr *MinCond = nullptr;
+        Expr *MaxCond = nullptr;
+        bool OutOfRange = false;
+
+        QualType IdxTy = AE->getIdx()->getType();
+
+        // Verify that the index is unsigned or >= 0
+        if (IdxTy->isSignedIntegerType()) {
+          unsigned Size = static_cast<unsigned>(Context.getTypeSize(IdxTy));
+          Expr *Zero = IntegerLiteral::Create(Context, llvm::APInt(Size, 0),
+                                              IdxTy, SourceLocation());
+          MinCond = new (Context)
+              BinaryOperator(AE->getIdx(), Zero, BO_GE, IdxTy, VK_RValue,
+                             OK_Ordinary, SourceLocation(), FPOptions());
+          bool Result;
+          // TODO: Evaluate using value ranges from attributes and analysis
+          if (MinCond->EvaluateAsBooleanCondition(Result, Context)) {
+            // delete MinCond;
+            MinCond = nullptr;
+            if (!Result) {
+              OutOfRange = true;
+              reportSecureBufferOutOfRange(AE, AE->getIdx());
+            }
+          }
+        }
+
+        // Verify that the index is less than the length
+        Expr *Max = SB->getLength();
+        if (Max->getType() != IdxTy) {
+          Max = ImplicitCastExpr::Create(Context, IdxTy, CK_IntegralCast, Max,
+                                         nullptr, VK_RValue);
+        }
+        MaxCond = new (Context)
+            BinaryOperator(AE->getIdx(), Max, BO_LT, IdxTy, VK_RValue,
+                           OK_Ordinary, SourceLocation(), FPOptions());
+        bool Result;
+        // TODO: Evaluate using value ranges from attributes and analysis
+        if (MaxCond->EvaluateAsBooleanCondition(Result, Context)) {
+          // delete MaxCond;
+          MaxCond = nullptr;
+          if (!Result) {
+            OutOfRange = true;
+            reportSecureBufferOutOfRange(AE, AE->getIdx());
+          }
+        }
+
+        if (!OutOfRange && (MinCond || MaxCond)) {
+          Expr *Cond;
+          if (MinCond && MaxCond) {
+            Cond = new (Context) BinaryOperator(
+                MinCond, MaxCond, BO_LAnd, Context.BoolTy, VK_RValue,
+                OK_Ordinary, SourceLocation(), FPOptions());
+          } else if (MinCond) {
+            Cond = MinCond;
+          } else {
+            Cond = MaxCond;
+          }
+
+          reportUncheckedSecureBuffer(AE, AE->getIdx(), SB->getLength(), Cond);
+        }
+      } else {
+        reportMissingSecureBuffer(Base, AE);
+      }
+    }
+    // TODO: Handle other bases (member accesses, dereferences, etc.)
+  }
+
   return true;
 }
 
@@ -389,7 +466,7 @@ void SecureCVisitor::reportStatistics(bool DebugMode) {
     Stats->reportStatistics(DebugMode);
 }
 
-void SecureCVisitor::insertRuntimeCheck(const Expr *Pointer) {
+void SecureCVisitor::insertRuntimeNullCheck(const Expr *Pointer) {
   // Don't insert run-time checks into system macros
   if (Context.getSourceManager().isInSystemMacro(Pointer->getBeginLoc()))
     return;
@@ -443,6 +520,11 @@ void SecureCVisitor::insertRuntimeCheck(const Expr *Pointer) {
       reportFailedReplacement(Pointer, RE.message());
     });
   }
+}
+
+void SecureCVisitor::insertRuntimeRangeCheck(const Expr *Val,
+                                             const Expr *Cond) {
+  // TODO: Insert range check
 }
 
 StringRef SecureCVisitor::getSourceString(const Expr *Pointer,
@@ -540,7 +622,7 @@ void SecureCVisitor::reportIllegalCast(const QualType &Ty, const Expr *Pointer,
 
   // In debug mode, we insert a run-time check into the code
   if (RunMode == debug) {
-    insertRuntimeCheck(Pointer);
+    insertRuntimeNullCheck(Pointer);
     ID = DE.getCustomDiagID(
         clang::DiagnosticsEngine::Remark,
         "unsafe non-null promotion, inserting run-time check");
@@ -564,7 +646,7 @@ void SecureCVisitor::reportIllegalAccess(const Expr *Pointer,
 
   // In debug mode, we insert a run-time check into the code
   if (RunMode == debug) {
-    insertRuntimeCheck(Pointer);
+    insertRuntimeNullCheck(Pointer);
     ID = DE.getCustomDiagID(clang::DiagnosticsEngine::Remark,
                             "illegal access of nullable pointer type, "
                             "inserting run-time check");
@@ -661,6 +743,59 @@ void SecureCVisitor::reportFailedHeaderInsert(std::string ErrMsg) {
 
   auto DB = DE.Report(ID);
   DB.AddString(ErrMsg);
+}
+
+void SecureCVisitor::reportMissingSecureBuffer(const Expr *Pointer,
+                                               const Expr *Access) {
+  auto &DE = Context.getDiagnostics();
+  auto ID = DE.getCustomDiagID(
+      clang::DiagnosticsEngine::Error,
+      "illegal access of pointer without secure_buffer attribute");
+
+  auto DB = DE.Report(Access->getBeginLoc(), ID);
+  DB.AddString(Pointer->getType().getAsString());
+
+  const auto Range =
+      clang::CharSourceRange::getCharRange(Access->getSourceRange());
+  DB.AddSourceRange(Range);
+}
+
+void SecureCVisitor::reportUncheckedSecureBuffer(const Expr *Access,
+                                                 const Expr *Index,
+                                                 const Expr *Length,
+                                                 const Expr *Cond) {
+  auto &DE = Context.getDiagnostics();
+  auto ID = DE.getCustomDiagID(
+      clang::DiagnosticsEngine::Error,
+      "unable to guarantee that index is within range of secure buffer");
+
+  // In debug mode, we insert a run-time check into the code
+  if (RunMode == debug) {
+    insertRuntimeRangeCheck(Index, Cond);
+    ID = DE.getCustomDiagID(
+        clang::DiagnosticsEngine::Remark,
+        "unable to guarantee that index is within range of secure buffer,"
+        " inserting run-time check");
+  }
+
+  auto DB = DE.Report(Index->getBeginLoc(), ID);
+
+  const auto Range =
+      clang::CharSourceRange::getCharRange(Access->getSourceRange());
+  DB.AddSourceRange(Range);
+}
+
+void SecureCVisitor::reportSecureBufferOutOfRange(const Expr *Access,
+                                                  const Expr *Index) {
+  auto &DE = Context.getDiagnostics();
+  auto ID = DE.getCustomDiagID(clang::DiagnosticsEngine::Error,
+                               "index out of range for secure buffer");
+
+  auto DB = DE.Report(Index->getBeginLoc(), ID);
+
+  const auto Range =
+      clang::CharSourceRange::getCharRange(Access->getSourceRange());
+  DB.AddSourceRange(Range);
 }
 
 bool SecureCVisitor::isNullabilityAnnotated(const QualType &QT) {

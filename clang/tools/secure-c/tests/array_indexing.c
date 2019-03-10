@@ -1,5 +1,5 @@
 //bats @test "array_indexing.c: use nonnull pointer for array indexing" {
-//bats   run secure-c array_indexing.c --
+//bats   run secure-c -secure-buffer=false array_indexing.c --
 //bats   [ $status = 0 ]
 //bats }
 #include <stddef.h>

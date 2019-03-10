@@ -1,5 +1,5 @@
 //bats @test "macro_body.c: Insert check into macro body (not arg)" {
-//bats   run secure-c -mode=debug macro_body.c --
+//bats   run secure-c -mode=debug -secure-buffer=false macro_body.c --
 //bats   [ $status = 0 ] && echo ${lines[16]}
 //bats   [[ ${lines[0]} =~ ":13:10: remark: illegal access of nullable pointer type, inserting run-time check" ]]
 //bats   [[ ${lines[7]} =~ "#include <secure_c.h>" ]]
