@@ -77,6 +77,13 @@ public:
 
     bool ret = RecursiveASTVisitor<SecurifyVisitor>::TraverseFunctionDecl(FD);
 
+    // If this is a declaration (with no body), save it to be updated after
+    // processing the definition
+    if (!FD->doesThisDeclarationHaveABody()) {
+      SavedFuncDecls[FD->getName()] = FD;
+      return ret;
+    }
+
     // Parameters that were not annotated should be marked as nullable
     for (unsigned int i = 0; i < FD->getNumParams(); i++) {
       const ParmVarDecl *Param = FD->getParamDecl(i);
@@ -87,6 +94,31 @@ public:
             makeNonNull(Param);
           } else {
             makeNullable(Param);
+          }
+        }
+      }
+    }
+
+    // Check if there is a saved declaration that we should update
+    auto Found = SavedFuncDecls.find(FD->getName());
+    if (Found != SavedFuncDecls.end()) {
+      FunctionDecl *Saved = Found->second;
+      for (unsigned int i = 0; i < FD->getNumParams(); i++) {
+        const ParmVarDecl *SavedParam = Saved->getParamDecl(i);
+        if (SavedParam->getType()->isPointerType()) {
+          // If it is already annotated, leave it as-is
+          const QualType QT = SavedParam->getType();
+          if (auto AType = dyn_cast<AttributedType>(QT.getTypePtr())) {
+            auto NK = AType->getNullability(Context);
+            if (NK.hasValue()) {
+              continue;
+            }
+          }
+          const ParmVarDecl *Param = FD->getParamDecl(i);
+          if (isNonNull(Param)) {
+            makeNonNull(SavedParam);
+          } else {
+            makeNullable(SavedParam);
           }
         }
       }
@@ -263,6 +295,9 @@ private:
   // Pointers that have been identified
   std::map<const VarDecl *, NullabilityKind> PtrVars =
       std::map<const VarDecl *, NullabilityKind>();
+
+  std::map<StringRef, FunctionDecl *> SavedFuncDecls =
+      std::map<StringRef, FunctionDecl *>();
 
   // True when traversing inside an assert statement
   bool TraversingAssert = false;
