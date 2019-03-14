@@ -50,6 +50,11 @@ public:
       std::map<std::string, tooling::Replacements> &FileToReplaces)
       : Context(Context), FileToReplaces(FileToReplaces) {}
 
+  void SecurifyDecl(Decl *D) {
+    TraverseDecl(D);
+    createReplacements();
+  }
+
   bool TraverseDecl(Decl *D) {
     // Don't traverse in system header files
     SourceLocation Loc = D->getLocation();
@@ -350,22 +355,7 @@ private:
     if (ParamsOnly && dyn_cast<ParmVarDecl>(VD) == NULL) {
       return;
     }
-
-    StringRef Annotation = " _Nonnull ";
-    if (Kind == NullabilityKind::Nullable) {
-      Annotation = " _Nullable ";
-    }
     PtrVars[VD] = Kind;
-
-    Replacement Rep(
-        Context.getSourceManager(),
-        VD->getTypeSourceInfo()->getTypeLoc().getEndLoc().getLocWithOffset(1),
-        0, Annotation);
-    llvm::Error Err = FileToReplaces[Rep.getFilePath()].add(Rep);
-    if (Err) {
-      llvm::errs() << "replacement failed: " << llvm::toString(std::move(Err))
-                   << "\n";
-    }
   }
 
   void makeNonNull(const VarDecl *VD) {
@@ -373,6 +363,28 @@ private:
   }
   void makeNullable(const VarDecl *VD) {
     annotate(VD, NullabilityKind::Nullable);
+  }
+
+  void createReplacements() {
+    for (auto const& x : PtrVars) {
+      const VarDecl *VD = x.first;
+      NullabilityKind Kind = x.second;
+
+      StringRef Annotation = " _Nonnull ";
+      if (Kind == NullabilityKind::Nullable) {
+        Annotation = " _Nullable ";
+      }
+
+      Replacement Rep(
+          Context.getSourceManager(),
+          VD->getTypeSourceInfo()->getTypeLoc().getEndLoc().getLocWithOffset(1),
+          0, Annotation);
+      llvm::Error Err = FileToReplaces[Rep.getFilePath()].add(Rep);
+      if (Err) {
+        llvm::errs() << "replacement failed: " << llvm::toString(std::move(Err))
+                     << "\n";
+      }
+    }
   }
 };
 
@@ -384,7 +396,7 @@ public:
 
   virtual void HandleTranslationUnit(clang::ASTContext &Context) {
     SecurifyVisitor Visitor(Context, FileToReplaces);
-    Visitor.TraverseDecl(Context.getTranslationUnitDecl());
+    Visitor.SecurifyDecl(Context.getTranslationUnitDecl());
   }
 
 private:
