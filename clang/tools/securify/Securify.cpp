@@ -69,17 +69,6 @@ public:
   }
 
   bool TraverseFunctionDecl(FunctionDecl *FD) {
-    for (unsigned int i = 0; i < FD->getNumParams(); i++) {
-      const ParmVarDecl *Param = FD->getParamDecl(i);
-      const QualType QT = Param->getType();
-      if (auto AType = dyn_cast<AttributedType>(QT.getTypePtr())) {
-        auto NK = AType->getNullability(Context);
-        if (NK.hasValue()) {
-          PtrVars[Param] = NK.getValue();
-        }
-      }
-    }
-
     bool ret = RecursiveASTVisitor<SecurifyVisitor>::TraverseFunctionDecl(FD);
 
     // If this is a declaration (with no body), save it to be updated after
@@ -89,10 +78,10 @@ public:
       return ret;
     }
 
-    // Parameters that were not annotated should be marked as nullable
+    // Parameters that were not annotated should be marked with default
     for (unsigned int i = 0; i < FD->getNumParams(); i++) {
       const ParmVarDecl *Param = FD->getParamDecl(i);
-      if (Param->getType()->isPointerType()) {
+      if (isCandidate(Param->getType())) {
         auto D = PtrVars.find(Param);
         if (D == PtrVars.end()) {
           if (DefaultNonNull) {
@@ -110,7 +99,7 @@ public:
       FunctionDecl *Saved = Found->second;
       for (unsigned int i = 0; i < FD->getNumParams(); i++) {
         const ParmVarDecl *SavedParam = Saved->getParamDecl(i);
-        if (SavedParam->getType()->isPointerType()) {
+        if (isCandidate(SavedParam->getType())) {
           // If it is already annotated, leave it as-is
           const QualType QT = SavedParam->getType();
           if (auto AType = dyn_cast<AttributedType>(QT.getTypePtr())) {
@@ -135,7 +124,7 @@ public:
   bool VisitBinaryOperator(BinaryOperator *BO) {
     if (BO->getOpcode() == BO_EQ || BO->getOpcode() == BO_NE) {
       // x == NULL OR x != NULL
-      if (BO->getLHS()->getType()->isPointerType() &&
+      if (isCandidate(BO->getLHS()->getType()) &&
           BO->getRHS()->isNullPointerConstant(
               Context, Expr::NPC_NeverValueDependent) != Expr::NPCK_NotNull) {
         if (DeclRefExpr *LHS =
@@ -156,7 +145,7 @@ public:
         }
       }
       // NULL == x OR NULL != x
-      if (BO->getRHS()->getType()->isPointerType() &&
+      if (isCandidate(BO->getRHS()->getType()) &&
           BO->getLHS()->isNullPointerConstant(
               Context, Expr::NPC_NeverValueDependent) != Expr::NPCK_NotNull) {
         if (DeclRefExpr *RHS =
@@ -196,7 +185,7 @@ public:
       }
 
       // Assigning NULL to a pointer (assume nullable)
-      if (BO->getLHS()->getType()->isPointerType() &&
+      if (isCandidate(BO->getLHS()->getType()) &&
           BO->getRHS()->isNullPointerConstant(
               Context, Expr::NPC_NeverValueDependent) != Expr::NPCK_NotNull) {
         if (DeclRefExpr *LHS =
@@ -255,7 +244,7 @@ public:
   bool VisitMemberExpr(MemberExpr *ME) {
     if (DeclRefExpr *DRE =
             dyn_cast<DeclRefExpr>(ME->getBase()->IgnoreParenImpCasts())) {
-      if (DRE->getType()->isPointerType()) {
+      if (isCandidate(DRE->getType())) {
         // If this variable is not in the list, add it now as assumed non-null
         if (VarDecl *VD = dyn_cast<VarDecl>(DRE->getDecl())) {
           auto D = PtrVars.find(VD);
@@ -290,7 +279,7 @@ public:
   bool VisitArraySubscriptExpr(ArraySubscriptExpr *ASE) {
     if (DeclRefExpr *DRE =
             dyn_cast<DeclRefExpr>(ASE->getBase()->IgnoreParenImpCasts())) {
-      if (DRE->getType()->isPointerType()) {
+      if (isCandidate(DRE->getType())) {
         if (VarDecl *VD = dyn_cast<VarDecl>(DRE->getDecl())) {
           // If this variable is not in the list, add it now as assumed non-null
           auto D = PtrVars.find(VD);
@@ -308,7 +297,7 @@ public:
     for (auto DI = DS->decl_begin(); DI != DS->decl_end(); ++DI) {
       if (VarDecl *VD = dyn_cast<VarDecl>(*DI)) {
         // If it is not a pointer, or it is already annotated, skip it
-        if (!VD->getType()->isPointerType() ||
+        if (!isCandidate(VD->getType()) ||
             isNullibityAnnotated(VD->getType())) {
           continue;
         }
@@ -357,6 +346,10 @@ private:
       }
     }
     return false;
+  }
+
+  bool isCandidate(const QualType &QT) {
+    return QT->isPointerType() && !isNullibityAnnotated(QT);
   }
 
   bool isNonNull(QualType QT) {
