@@ -376,7 +376,7 @@ private:
   }
 
   void createReplacements() {
-    for (auto const& x : PtrVars) {
+    for (auto const &x : PtrVars) {
       const VarDecl *VD = x.first;
       NullabilityKind Kind = x.second;
 
@@ -451,8 +451,8 @@ int main(int argc, const char **argv) {
     Rewriter Rewrite(Sources, LangOptions());
     Tool.applyAllReplacements(Rewrite);
 
-    // Query the rewriter for all the files it has rewritten, dumping their new
-    // contents to stdout.
+    // Query the rewriter for all the files it has rewritten, dumping their
+    // new contents to stdout.
     for (Rewriter::buffer_iterator I = Rewrite.buffer_begin(),
                                    E = Rewrite.buffer_end();
          I != E; ++I) {
