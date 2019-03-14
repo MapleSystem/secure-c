@@ -180,19 +180,29 @@ public:
       return true;
     }
 
-    if (BO->getOpcode() != BO_Assign) {
-      return true;
-    }
-    const Expr *LHS = BO->getLHS();
+    if (BO->getOpcode() == BO_Assign) {
+      // Assignment to a non-null (assume non-null)
+      if (isNonNull(BO->getLHS())) {
+        if (DeclRefExpr *RHS =
+                dyn_cast<DeclRefExpr>(BO->getRHS()->IgnoreParenImpCasts())) {
+          // If this variable is not in the list, add it now as assumed non-null
+          if (VarDecl *VD = dyn_cast<VarDecl>(RHS->getDecl())) {
+            auto D = PtrVars.find(VD);
+            if (D == PtrVars.end()) {
+              makeNonNull(VD);
+            }
+          }
+        }
+      }
 
-    if (isNonNull(LHS)) {
-      if (DeclRefExpr *RHS =
-              dyn_cast<DeclRefExpr>(BO->getRHS()->IgnoreParenImpCasts())) {
-        // If this variable is not in the list, add it now as assumed non-null
-        if (VarDecl *VD = dyn_cast<VarDecl>(RHS->getDecl())) {
-          auto D = PtrVars.find(VD);
-          if (D == PtrVars.end()) {
-            makeNonNull(VD);
+      // Assigning NULL to a pointer (assume nullable)
+      if (BO->getLHS()->getType()->isPointerType() &&
+          BO->getRHS()->isNullPointerConstant(
+              Context, Expr::NPC_NeverValueDependent) != Expr::NPCK_NotNull) {
+        if (DeclRefExpr *LHS =
+                dyn_cast<DeclRefExpr>(BO->getLHS()->IgnoreParenImpCasts())) {
+          if (VarDecl *VD = dyn_cast<VarDecl>(LHS->getDecl())) {
+            makeNullable(VD);
           }
         }
       }
