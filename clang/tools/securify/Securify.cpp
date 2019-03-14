@@ -304,6 +304,37 @@ public:
     return true;
   }
 
+  bool VisitDeclStmt(DeclStmt *DS) {
+    for (auto DI = DS->decl_begin(); DI != DS->decl_end(); ++DI) {
+      if (VarDecl *VD = dyn_cast<VarDecl>(*DI)) {
+        // If it is not a pointer, or it is already annotated, skip it
+        if (!VD->getType()->isPointerType() ||
+            isNullibityAnnotated(VD->getType())) {
+          continue;
+        }
+
+        // An uninitialized pointer must be nullable
+        if (!VD->hasInit()) {
+          makeNullable(VD);
+        } else {
+          // A pointer initialized with NULL must be nullable
+          if (VD->getInit()->isNullPointerConstant(
+                  Context, Expr::NPC_NeverValueDependent) !=
+              Expr::NPCK_NotNull) {
+            makeNullable(VD);
+          }
+          // Any other initializer that is not non-null compatible means that
+          // the pointer must be nullable
+          else if (!isNonNullCompatible(VD->getInit())) {
+            makeNullable(VD);
+          }
+        }
+      }
+    }
+
+    return true;
+  }
+
 private:
   ASTContext &Context;
 
@@ -319,6 +350,15 @@ private:
 
   std::map<std::string, tooling::Replacements> &FileToReplaces;
 
+  bool isNullibityAnnotated(const QualType &QT) {
+    if (auto AType = dyn_cast<AttributedType>(QT.getTypePtr())) {
+      if (AType->getImmediateNullability() != None) {
+        return true;
+      }
+    }
+    return false;
+  }
+
   bool isNonNull(QualType QT) {
     // Check if this type is already annotated with non-null
     if (auto AType = dyn_cast<AttributedType>(QT.getTypePtr())) {
@@ -331,6 +371,12 @@ private:
   }
 
   bool isNonNull(const VarDecl *VD) {
+    // Check the type
+    if (isNonNull(VD->getType())) {
+      return true;
+    }
+
+    // Check if it is in our map as non-null
     auto D = PtrVars.find(VD);
     if (D != PtrVars.end()) {
       if (D->second == NullabilityKind::NonNull) {
@@ -355,6 +401,30 @@ private:
           return true;
         }
       }
+    }
+
+    return false;
+  }
+
+  bool isNonNullCompatible(Expr const *E) {
+    // Is the expression non-null annotated
+    if (isNonNull(E)) {
+      return true;
+    }
+
+    // Strip off
+    Expr const *Stripped = E->IgnoreParenImpCasts();
+
+    // Is the expr taking an address of an object?
+    if (auto UO = dyn_cast<UnaryOperator>(Stripped)) {
+      if (UO->getOpcode() == UO_AddrOf) {
+        return true;
+      }
+    }
+
+    // Is the expr a string literal?
+    if (dyn_cast<StringLiteral>(Stripped)) {
+      return true;
     }
 
     return false;
