@@ -69,18 +69,29 @@ public:
   }
 
   bool TraverseFunctionDecl(FunctionDecl *FD) {
-    bool ret = RecursiveASTVisitor<SecurifyVisitor>::TraverseFunctionDecl(FD);
+    // If this function has already been analyzed, skip it
+    if (FuncsAnalyzed.find(FD) != FuncsAnalyzed.end()) {
+      return true;
+    }
+
+    FunctionDecl *Definition = FD;
 
     // If this is a declaration (with no body), save it to be updated after
     // processing the definition
     if (!FD->doesThisDeclarationHaveABody()) {
-      SavedFuncDecls[FD->getName()] = FD;
-      return ret;
+      if (FD->hasBody()) {
+        Definition = FD->getDefinition();
+      } else {
+        // There is no definition for this function
+        return true;
+      }
     }
 
+    bool ret = RecursiveASTVisitor<SecurifyVisitor>::TraverseFunctionDecl(Definition);
+
     // Parameters that were not annotated should be marked with default
-    for (unsigned int i = 0; i < FD->getNumParams(); i++) {
-      const ParmVarDecl *Param = FD->getParamDecl(i);
+    for (unsigned int i = 0; i < Definition->getNumParams(); i++) {
+      const ParmVarDecl *Param = Definition->getParamDecl(i);
       if (isCandidate(Param->getType())) {
         auto D = PtrVars.find(Param);
         if (D == PtrVars.end()) {
@@ -93,29 +104,23 @@ public:
       }
     }
 
-    // Check if there is a saved declaration that we should update
-    auto Found = SavedFuncDecls.find(FD->getName());
-    if (Found != SavedFuncDecls.end()) {
-      FunctionDecl *Saved = Found->second;
-      for (unsigned int i = 0; i < FD->getNumParams(); i++) {
-        const ParmVarDecl *SavedParam = Saved->getParamDecl(i);
-        if (isCandidate(SavedParam->getType())) {
-          // If it is already annotated, leave it as-is
-          const QualType QT = SavedParam->getType();
-          if (auto AType = dyn_cast<AttributedType>(QT.getTypePtr())) {
-            auto NK = AType->getNullability(Context);
-            if (NK.hasValue()) {
-              continue;
-            }
-          }
-          const ParmVarDecl *Param = FD->getParamDecl(i);
+    FuncsAnalyzed.insert(Definition);
+
+    // If this was a declaration, update its parameters
+    if (Definition != FD) {
+      for (unsigned int i = 0; i < Definition->getNumParams(); i++) {
+        const ParmVarDecl *DeclParam = FD->getParamDecl(i);
+        if (isCandidate(DeclParam->getType())) {
+          const ParmVarDecl *Param = Definition->getParamDecl(i);
           if (isNonNull(Param)) {
-            makeNonNull(SavedParam);
+            makeNonNull(DeclParam);
           } else {
-            makeNullable(SavedParam);
+            makeNullable(DeclParam);
           }
         }
       }
+
+      FuncsAnalyzed.insert(FD);
     }
 
     return ret;
@@ -219,6 +224,23 @@ public:
     const FunctionDecl *FD = CE->getDirectCallee();
     if (FD == NULL) {
       return true;
+    }
+
+    if (!FD->doesThisDeclarationHaveABody()) {
+      // If FD is a declaration without a body, get the definition
+      if (FD->hasBody()) {
+        FD = FD->getDefinition();
+      } else if (isUnannotated(FD)) {
+        // If there is no body, and it is not annotated, emit a warning
+        auto &DE = Context.getDiagnostics();
+        const auto ID = DE.getCustomDiagID(clang::DiagnosticsEngine::Warning,
+                                           "calling unannotated function");
+
+        auto DB = DE.Report(CE->getBeginLoc(), ID);
+        const auto Range =
+            clang::CharSourceRange::getCharRange(CE->getSourceRange());
+        DB.AddSourceRange(Range);
+      }
     }
 
     for (unsigned int i = 0; i < FD->getNumParams(); i++) {
@@ -327,12 +349,12 @@ public:
 private:
   ASTContext &Context;
 
+  // Functions that have been analyzed
+  std::set<const FunctionDecl *> FuncsAnalyzed = std::set<const FunctionDecl *>();
+
   // Pointers that have been identified
   std::map<const VarDecl *, NullabilityKind> PtrVars =
       std::map<const VarDecl *, NullabilityKind>();
-
-  std::map<StringRef, FunctionDecl *> SavedFuncDecls =
-      std::map<StringRef, FunctionDecl *>();
 
   // True when traversing inside an assert statement
   bool TraversingAssert = false;
@@ -436,6 +458,18 @@ private:
   }
   void makeNullable(const VarDecl *VD) {
     annotate(VD, NullabilityKind::Nullable);
+  }
+
+  // Has this function been annotated for nullability?
+  bool isUnannotated(const FunctionDecl *FD) {
+    for (unsigned int i = 0; i < FD->getNumParams(); i++) {
+      const ParmVarDecl *Param = FD->getParamDecl(i);
+      if (isCandidate(Param->getType())) {
+        return true;
+      }
+    }
+
+    return false;
   }
 
   void createReplacements() {
