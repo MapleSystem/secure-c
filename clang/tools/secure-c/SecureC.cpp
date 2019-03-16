@@ -318,6 +318,8 @@ private:
         return true;
       }
     }
+    if (isa<ConstantArrayType>(QT))  // e.g. a literal string
+      return true;
     return false;
   }
 
