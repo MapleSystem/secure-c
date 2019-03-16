@@ -7,6 +7,7 @@
 // Eli Bendersky (eliben@gmail.com)
 // This code is in the public domain
 //------------------------------------------------------------------------------
+#include <memory>
 #include <string>
 
 #include "clang/AST/AST.h"
@@ -26,6 +27,59 @@ using namespace clang;
 using namespace clang::driver;
 using namespace clang::tooling;
 static llvm::cl::OptionCategory SecureCCategory("Secure-C Compiler");
+
+class NullScope {
+  // Decls that have been checked in this scope.
+  // true = known to be NULL, false = known to be non-NULL
+  std::map<Decl *, bool> checkedDecls;
+  std::map<Decl *, bool> mergedDecls;
+  // Whether we are certain of checkedDecls or not.
+  // For example, uncertain for condition is "p == NULL || q == NULL".
+  // Only matters when there are >1 decls in the scope.
+  bool certain;
+  // Whether we have seen a return statement in this scope
+  bool returned;
+
+public:
+  NullScope() : certain(true), returned(false){};
+  void SetNullability(Decl *D, bool isNull) { checkedDecls[D] = isNull; }
+  void SetUncertain(bool uncertain) { certain = !uncertain; }
+  bool IsCertain() { return certain; }
+  void SetReturned() { returned = true; }
+  bool HasReturned() { return returned; }
+
+  // Return true if we definitely know D is not null.
+  bool IsNotNull(const Decl *D) {
+    if (checkedDecls.size() == 1 || certain) {
+      for (auto it : checkedDecls) {
+        if (it.first == D) {
+          return !it.second;
+        }
+      }
+    }
+    // The merged DECLs are considered certain
+    for (auto it : mergedDecls) {
+      if (it.first == D) {
+        return !it.second;
+      }
+    }
+    return false;
+  }
+
+  void Inverse() {
+    for (auto it : checkedDecls) {
+      checkedDecls[it.first] = !it.second;
+    }
+    if (checkedDecls.size() > 1)
+      certain = !certain;
+  }
+
+  void Merge(NullScope &ns) {
+    if (ns.IsCertain()) {
+      mergedDecls = ns.checkedDecls;
+    }
+  }
+};
 
 class SecureCVisitor : public RecursiveASTVisitor<SecureCVisitor> {
 public:
@@ -58,19 +112,17 @@ public:
     }
 
     // Create a function scope for checked decls
-    CheckedDecls.push_back(std::map<Decl *, bool>());
+    NullScopes.push_back(std::make_unique<NullScope>());
 
     RecursiveASTVisitor<SecureCVisitor>::TraverseFunctionDecl(FD);
 
     // Remove the function scoped checked decls
-    CheckedDecls.pop_back();
+    NullScopes.pop_back();
 
     return true;
   }
 
   bool TraverseIfStmt(IfStmt *If) {
-    CheckedDecls.push_back(std::map<Decl *, bool>());
-
     if (If->hasInitStorage()) {
       TraverseStmt(If->getInit());
     }
@@ -79,31 +131,46 @@ public:
       TraverseStmt(If->getConditionVariableDeclStmt());
     }
 
+    // A scope for pointers checked by the if-condition
+    NullScopes.push_back(std::make_unique<NullScope>());
+
     TraverseStmt(If->getCond());
     TraverseStmt(If->getThen());
 
     if (If->hasElseStorage()) {
       // In the else case, the values are switched
       // (decls known to be NULL in the if body are non-null in the else)
-      for (auto it = CheckedDecls.back().begin();
-           it != CheckedDecls.back().end(); ++it) {
-        it->second = !it->second;
-      }
+      NullScopes.back()->Inverse();
       TraverseStmt(If->getElse());
     }
-    CheckedDecls.pop_back();
+    // TODO: handle there are both true and false branch, and one or both has return.
+    else if (NullScopes.back()->HasReturned()) {
+      // If we return inside of an if stmt, put the inverse of the if's checked
+      // decls into the function scope. For example:
+      //   if (x == NULL) { return 0; }
+      // After this if stmt, we are sure that x is non-null in the parent scope.
+      auto &&IfScope = NullScopes[NullScopes.size() - 1];
+      auto &ParentScope = NullScopes[NullScopes.size() - 2];
+      // Merge into the parent scope the inverse of the current scope.
+      IfScope->Inverse();
+      ParentScope->Merge(*IfScope);
+    }
+    NullScopes.pop_back();
 
     return true;
   }
 
   bool VisitBinaryOperator(BinaryOperator *BO) {
+    // TODO: check if we are inside an if-condition, rather than e.g. "b = p
+    // != NULL"
     if (BO->getOpcode() == BO_EQ || BO->getOpcode() == BO_NE) {
       // x == NULL OR x != NULL
       if (BO->getRHS()->isNullPointerConstant(
               *Context, Expr::NPC_NeverValueDependent) != Expr::NPCK_NotNull) {
         if (DeclRefExpr *LHS =
                 dyn_cast<DeclRefExpr>(BO->getLHS()->IgnoreParenImpCasts())) {
-          CheckedDecls.back()[LHS->getDecl()] = BO->getOpcode() == BO_EQ;
+          NullScopes.back()->SetNullability(LHS->getDecl(),
+                                            BO->getOpcode() == BO_EQ);
         }
       }
       // NULL == x OR NULL != x
@@ -111,11 +178,18 @@ public:
               *Context, Expr::NPC_NeverValueDependent) != Expr::NPCK_NotNull) {
         if (DeclRefExpr *RHS =
                 dyn_cast<DeclRefExpr>(BO->getRHS()->IgnoreParenImpCasts())) {
-          CheckedDecls.back()[RHS->getDecl()] = BO->getOpcode() == BO_EQ;
+          NullScopes.back()->SetNullability(RHS->getDecl(),
+                                            BO->getOpcode() == BO_EQ);
         }
       }
 
       return true;
+    }
+
+    // A "or" operation throws uncertainty to the checked pointers in this
+    // if-condition.
+    if (BO->getOpcode() == BO_LOr) {
+      NullScopes.back()->SetUncertain(true);
     }
 
     if (BO->getOpcode() != BO_Assign) {
@@ -175,27 +249,14 @@ public:
   }
 
   bool VisitReturnStmt(ReturnStmt *RS) {
-    // If we return inside of an if stmt, put the inverse of the if's checked
-    // decls into the function scope. For example:
-    //   if (x == NULL) { return 0; }
-    // After this if stmt, we are sure that x is non-null for the rest of the
-    // function.
-    if (CheckedDecls.size() > 1) {
-      std::map<Decl *, bool> &IfScope = CheckedDecls.back();
-      std::map<Decl *, bool> &FuncScope = CheckedDecls.front();
-      for (auto const &CD : IfScope) {
-        FuncScope[CD.first] = !CD.second;
-      }
-    }
+    NullScopes.back()->SetReturned();
     return true;
   }
 
 private:
   ASTContext *Context;
 
-  // Decls that have been checked in this scope.
-  // true = known to be NULL, false = known to be non-NULL
-  std::vector<std::map<Decl *, bool>> CheckedDecls;
+  std::vector<std::unique_ptr<NullScope>> NullScopes;
 
   void reportIllegalCast(const QualType &Ty, const Expr *E,
                          const ASTContext &Context) {
@@ -279,11 +340,9 @@ private:
     // Is the expr referring to a known non-null decl?
     if (DeclRefExpr const *DRE = dyn_cast<DeclRefExpr>(Stripped)) {
       Decl const *D = DRE->getDecl();
-      for (auto const &CDMap : CheckedDecls) {
-        for (auto const &CD : CDMap) {
-          if (D == CD.first) {
-            return !CD.second;
-          }
+      for (auto &&nullScope : NullScopes) {
+        if (nullScope->IsNotNull(D)) {
+          return true;
         }
       }
     }
