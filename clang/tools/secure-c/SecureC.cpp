@@ -267,7 +267,7 @@ private:
                            "'%0' to non-nullable pointer type '%1'");
 
     auto DB = DE.Report(E->getBeginLoc(), ID);
-    DB.AddString(E->getType().getAsString());
+    DB.AddString(E->IgnoreParenImpCasts()->getType().getAsString());
     DB.AddString(Ty.getAsString());
 
     const auto Range =
