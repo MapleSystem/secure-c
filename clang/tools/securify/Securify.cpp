@@ -437,8 +437,8 @@ private:
       }
     }
 
-    // Is the expr a string literal?
-    if (dyn_cast<StringLiteral>(Stripped)) {
+    // Is the expr an array (ArrayToPointerDecay)?
+    if (isa<ConstantArrayType>(Stripped->getType())) {
       return true;
     }
 
