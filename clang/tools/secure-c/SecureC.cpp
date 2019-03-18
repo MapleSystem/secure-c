@@ -112,7 +112,7 @@ public:
     }
 
     // Create a function scope for checked decls
-    NullScopes.push_back(std::make_unique<NullScope>());
+    NullScopes.push_back(llvm::make_unique<NullScope>());
 
     RecursiveASTVisitor<SecureCVisitor>::TraverseFunctionDecl(FD);
 
