@@ -52,7 +52,7 @@ public:
 
   void SecurifyDecl(Decl *D) {
     TraverseDecl(D);
-    createReplacements();
+    createVarDeclReplacements();
   }
 
   bool TraverseDecl(Decl *D) {
@@ -87,24 +87,31 @@ public:
       }
     }
 
-    bool ret = RecursiveASTVisitor<SecurifyVisitor>::TraverseFunctionDecl(Definition);
+    if (FuncsAnalyzed.find(Definition) == FuncsAnalyzed.end()) {
+      RecursiveASTVisitor<SecurifyVisitor>::TraverseFunctionDecl(Definition);
 
-    // Parameters that were not annotated should be marked with default
-    for (unsigned int i = 0; i < Definition->getNumParams(); i++) {
-      const ParmVarDecl *Param = Definition->getParamDecl(i);
-      if (isCandidate(Param->getType())) {
-        auto D = PtrVars.find(Param);
-        if (D == PtrVars.end()) {
-          if (DefaultNonNull) {
-            makeNonNull(Param);
-          } else {
-            makeNullable(Param);
+      // Parameters that were not annotated should be marked with default
+      for (unsigned int i = 0; i < Definition->getNumParams(); i++) {
+        const ParmVarDecl *Param = Definition->getParamDecl(i);
+        if (isCandidate(Param->getType())) {
+          auto D = PtrVars.find(Param);
+          if (D == PtrVars.end()) {
+            if (DefaultNonNull) {
+              makeNonNull(Param);
+            } else {
+              makeNullable(Param);
+            }
           }
         }
       }
-    }
 
-    FuncsAnalyzed.insert(Definition);
+      if (isCandidate(Definition->getReturnType())) {
+        createReturnValueReplacement(Definition,
+                                     ReturnsNonNull.getValueOr(DefaultNonNull));
+      }
+
+      FuncsAnalyzed.insert(Definition);
+    }
 
     // If this was a declaration, update its parameters
     if (Definition != FD) {
@@ -120,10 +127,17 @@ public:
         }
       }
 
+      if (isCandidate(FD->getReturnType())) {
+        createReturnValueReplacement(FD,
+                                     ReturnsNonNull.getValueOr(DefaultNonNull));
+      }
+
       FuncsAnalyzed.insert(FD);
     }
 
-    return ret;
+    ReturnsNonNull.reset();
+
+    return true;
   }
 
   bool VisitBinaryOperator(BinaryOperator *BO) {
@@ -346,15 +360,28 @@ public:
     return true;
   }
 
+  bool VisitReturnStmt(ReturnStmt *RS) {
+    if (Expr *RE = RS->getRetValue()) {
+      ReturnsNonNull =
+          ReturnsNonNull.getValueOr(true) && isNonNullCompatible(RE);
+    }
+
+    return true;
+  }
+
 private:
   ASTContext &Context;
 
   // Functions that have been analyzed
-  std::set<const FunctionDecl *> FuncsAnalyzed = std::set<const FunctionDecl *>();
+  std::set<const FunctionDecl *> FuncsAnalyzed =
+      std::set<const FunctionDecl *>();
 
   // Pointers that have been identified
   std::map<const VarDecl *, NullabilityKind> PtrVars =
       std::map<const VarDecl *, NullabilityKind>();
+
+  // Track the nullability of a function's return value <valid, non-null>
+  Optional<bool> ReturnsNonNull;
 
   // True when traversing inside an assert statement
   bool TraversingAssert = false;
@@ -472,7 +499,23 @@ private:
     return false;
   }
 
-  void createReplacements() {
+  void createReturnValueReplacement(FunctionDecl *FD, bool NonNull) {
+    StringRef Annotation = " _Nonnull ";
+    if (!NonNull) {
+      Annotation = " _Nullable ";
+    }
+
+    Replacement Rep(Context.getSourceManager(),
+                    FD->getReturnTypeSourceRange().getEnd().getLocWithOffset(1),
+                    0, Annotation);
+    llvm::Error Err = FileToReplaces[Rep.getFilePath()].add(Rep);
+    if (Err) {
+      llvm::errs() << "replacement failed: " << llvm::toString(std::move(Err))
+                   << "\n";
+    }
+  }
+
+  void createVarDeclReplacements() {
     for (auto const &x : PtrVars) {
       const VarDecl *VD = x.first;
       NullabilityKind Kind = x.second;
