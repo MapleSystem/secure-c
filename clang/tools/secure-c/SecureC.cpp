@@ -88,7 +88,7 @@ public:
   bool shouldTraversePostOrder() { return true; }
 
   bool TraverseDecl(Decl *D) {
-    // Don't traverse in system header files
+    // Don't traverse Decl in system header files or not in source files
     SourceLocation Loc = D->getLocation();
     if (Loc.isValid() &&
         (Context->getSourceManager().isInSystemHeader(Loc) ||
@@ -97,6 +97,13 @@ public:
     }
 
     RecursiveASTVisitor<SecureCVisitor>::TraverseDecl(D);
+    return true;
+  }
+
+  bool TraverseVarDecl(VarDecl *VD) {
+    if (isNonnullAnnotated(VD->getType()) && !VD->hasInit()) {
+      reportUninitializedNonnull(VD, *Context);
+    }
     return true;
   }
 
@@ -302,10 +309,30 @@ private:
         clang::CharSourceRange::getCharRange(Param->getSourceRange());
     DB.AddSourceRange(Range);
   }
+  
+  void reportUninitializedNonnull(const VarDecl *VD, const ASTContext &Context) {
+    auto &DE = Context.getDiagnostics();
+    const auto ID = DE.getCustomDiagID(clang::DiagnosticsEngine::Error,
+                                       "Nonnull pointer is not initialized");
+
+    auto DB = DE.Report(VD->getTypeSpecStartLoc(), ID);
+    const auto Range =
+        clang::CharSourceRange::getCharRange(VD->getSourceRange());
+    DB.AddSourceRange(Range);
+  }
 
   bool isNullibityAnnotated(const QualType &QT) {
     if (auto AType = dyn_cast<AttributedType>(QT.getTypePtr())) {
       if (AType->getImmediateNullability() != None) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  bool isNonnullAnnotated(const QualType &QT) {
+    if (auto AType = dyn_cast<AttributedType>(QT.getTypePtr())) {
+      if (AType->getImmediateNullability() == NullabilityKind::NonNull) {
         return true;
       }
     }
