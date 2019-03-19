@@ -37,20 +37,23 @@ class NullScope {
   // For example, uncertain for condition is "p == NULL || q == NULL".
   // Only matters when there are >1 decls in the scope.
   bool certain;
+  // whether the if-condition is compound (by OR/AND)
+  bool compound;
   // Whether we have seen a return statement in this scope
   bool returned;
 
 public:
-  NullScope() : certain(true), returned(false){};
+  NullScope() : certain(true), compound(false), returned(false){};
   void SetNullability(Decl *D, bool isNull) { checkedDecls[D] = isNull; }
   void SetUncertain(bool uncertain) { certain = !uncertain; }
   bool IsCertain() { return certain; }
   void SetReturned() { returned = true; }
+  void SetCompound() { compound = true; }
   bool HasReturned() { return returned; }
 
   // Return true if we definitely know D is not null.
   bool IsNotNull(const Decl *D) {
-    if (checkedDecls.size() == 1 || certain) {
+    if (certain) {
       for (auto it : checkedDecls) {
         if (it.first == D) {
           return !it.second;
@@ -70,7 +73,7 @@ public:
     for (auto it : checkedDecls) {
       checkedDecls[it.first] = !it.second;
     }
-    if (checkedDecls.size() > 1)
+    if (compound)
       certain = !certain;
   }
 
@@ -150,7 +153,8 @@ public:
       NullScopes.back()->Inverse();
       TraverseStmt(If->getElse());
     }
-    // TODO: handle there are both true and false branch, and one or both has return.
+    // TODO: handle there are both true and false branch, and one or both has
+    // return.
     else if (NullScopes.back()->HasReturned()) {
       // If we return inside of an if stmt, put the inverse of the if's checked
       // decls into the function scope. For example:
@@ -198,6 +202,10 @@ public:
     if (BO->getOpcode() == BO_LOr) {
       NullScopes.back()->SetUncertain(true);
     }
+    if (BO->getOpcode() == BO_LOr || BO->getOpcode() == BO_LAnd) {
+      NullScopes.back()->SetCompound();
+    }
+
 
     if (BO->getOpcode() != BO_Assign) {
       return true;
@@ -309,8 +317,9 @@ private:
         clang::CharSourceRange::getCharRange(Param->getSourceRange());
     DB.AddSourceRange(Range);
   }
-  
-  void reportUninitializedNonnull(const VarDecl *VD, const ASTContext &Context) {
+
+  void reportUninitializedNonnull(const VarDecl *VD,
+                                  const ASTContext &Context) {
     auto &DE = Context.getDiagnostics();
     const auto ID = DE.getCustomDiagID(clang::DiagnosticsEngine::Error,
                                        "Nonnull pointer is not initialized");
@@ -345,7 +354,7 @@ private:
         return true;
       }
     }
-    if (isa<ConstantArrayType>(QT))  // e.g. a literal string
+    if (isa<ConstantArrayType>(QT)) // e.g. a literal string
       return true;
     return false;
   }
