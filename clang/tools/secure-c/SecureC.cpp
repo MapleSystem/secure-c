@@ -139,7 +139,7 @@ public:
     }
 
     // A scope for pointers checked by the if-condition
-    NullScopes.push_back(std::make_unique<NullScope>());
+    NullScopes.push_back(llvm::make_unique<NullScope>());
 
     TraverseStmt(If->getCond());
     TraverseStmt(If->getThen());
