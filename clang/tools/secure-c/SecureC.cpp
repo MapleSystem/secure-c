@@ -27,6 +27,10 @@ using namespace clang;
 using namespace clang::driver;
 using namespace clang::tooling;
 static llvm::cl::OptionCategory SecureCCategory("Secure-C Compiler");
+static llvm::cl::opt<bool>
+    DefaultNullable("default-nullable",
+                    llvm::cl::desc("Allow unannotated pointers and default to nullable."),
+                    llvm::cl::cat(SecureCCategory));
 
 class NullScope {
   // Decls that have been checked in this scope.
@@ -115,7 +119,7 @@ public:
       const ParmVarDecl *Param = FD->getParamDecl(i);
       const QualType QT = Param->getType();
       if (dyn_cast<PointerType>(QT.getTypePtr())) {
-        if (!isNullibityAnnotated(QT)) {
+        if (!DefaultNullable && !isNullibityAnnotated(QT)) {
           reportUnannotatedParam(FD, Param, false, *Context);
         }
       }
