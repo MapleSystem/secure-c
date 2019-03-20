@@ -27,10 +27,10 @@ using namespace clang;
 using namespace clang::driver;
 using namespace clang::tooling;
 static llvm::cl::OptionCategory SecureCCategory("Secure-C Compiler");
-static llvm::cl::opt<bool>
-    DefaultNullable("default-nullable",
-                    llvm::cl::desc("Allow unannotated pointers and default to nullable."),
-                    llvm::cl::cat(SecureCCategory));
+static llvm::cl::opt<bool> DefaultNullable(
+    "default-nullable",
+    llvm::cl::desc("Allow unannotated pointers and default to nullable."),
+    llvm::cl::cat(SecureCCategory));
 
 class NullScope {
   // Decls that have been checked in this scope.
@@ -252,15 +252,22 @@ public:
     return true;
   }
 
+  bool VisitArraySubscriptExpr(ArraySubscriptExpr *AE) {
+    Expr *Base = AE->getBase();
+    if (!isNonnullCompatible(Base)) {
+      reportIllegalAccess(Base->getType(), AE, *Context);
+    }
+
+    return true;
+  }
+
   bool VisitUnaryOperator(UnaryOperator *UO) {
     if (UO->getOpcode() != UO_Deref) {
       return true;
     }
-    if (DeclRefExpr *DRE =
-            dyn_cast<DeclRefExpr>(UO->getSubExpr()->IgnoreParenImpCasts())) {
-      if (!isNonnullCompatible(DRE)) {
-        reportIllegalAccess(DRE->getType(), UO, *Context);
-      }
+    auto expr = UO->getSubExpr()->IgnoreParenImpCasts();
+    if (!isNonnullCompatible(expr)) {
+      reportIllegalAccess(expr->getType(), UO, *Context);
     }
 
     return true;
