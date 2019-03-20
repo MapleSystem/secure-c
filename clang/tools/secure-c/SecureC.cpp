@@ -31,37 +31,37 @@ static llvm::cl::OptionCategory SecureCCategory("Secure-C Compiler");
 class NullScope {
   // Decls that have been checked in this scope.
   // true = known to be NULL, false = known to be non-NULL
-  std::map<Decl *, bool> checkedDecls;
-  std::map<Decl *, bool> mergedDecls;
-  // Whether we are certain of checkedDecls or not.
+  std::map<Decl *, bool> CheckedDecls;
+  std::map<Decl *, bool> MergedDecls;
+  // Whether we are certain of CheckedDecls or not.
   // For example, uncertain for condition is "p == NULL || q == NULL".
   // Only matters when there are >1 decls in the scope.
-  bool certain;
+  bool Certain;
   // whether the if-condition is compound (by OR/AND)
-  bool compound;
+  bool Compound;
   // Whether we have seen a return statement in this scope
-  bool returned;
+  bool Returned;
 
 public:
-  NullScope() : certain(true), compound(false), returned(false){};
-  void SetNullability(Decl *D, bool isNull) { checkedDecls[D] = isNull; }
-  void SetUncertain(bool uncertain) { certain = !uncertain; }
-  bool IsCertain() { return certain; }
-  void SetReturned() { returned = true; }
-  void SetCompound() { compound = true; }
-  bool HasReturned() { return returned; }
+  NullScope() : Certain(true), Compound(false), Returned(false){};
+  void setNullability(Decl *D, bool isNull) { CheckedDecls[D] = isNull; }
+  void setUncertain(bool uncertain) { Certain = !uncertain; }
+  bool isCertain() { return Certain; }
+  void setReturned() { Returned = true; }
+  void setCompound() { Compound = true; }
+  bool hasReturned() { return Returned; }
 
   // Return true if we definitely know D is not null.
-  bool IsNotNull(const Decl *D) {
-    if (certain) {
-      for (auto it : checkedDecls) {
+  bool isNotNull(const Decl *D) {
+    if (Certain) {
+      for (auto it : CheckedDecls) {
         if (it.first == D) {
           return !it.second;
         }
       }
     }
-    // The merged DECLs are considered certain
-    for (auto it : mergedDecls) {
+    // The merged DECLs are considered Certain
+    for (auto it : MergedDecls) {
       if (it.first == D) {
         return !it.second;
       }
@@ -69,17 +69,17 @@ public:
     return false;
   }
 
-  void Inverse() {
-    for (auto it : checkedDecls) {
-      checkedDecls[it.first] = !it.second;
+  void inverse() {
+    for (auto it : CheckedDecls) {
+      CheckedDecls[it.first] = !it.second;
     }
-    if (compound)
-      certain = !certain;
+    if (Compound)
+      Certain = !Certain;
   }
 
-  void Merge(NullScope &ns) {
-    if (ns.IsCertain()) {
-      mergedDecls = ns.checkedDecls;
+  void merge(NullScope &ns) {
+    if (ns.isCertain()) {
+      MergedDecls = ns.CheckedDecls;
     }
   }
 };
@@ -150,21 +150,21 @@ public:
     if (If->hasElseStorage()) {
       // In the else case, the values are switched
       // (decls known to be NULL in the if body are non-null in the else)
-      NullScopes.back()->Inverse();
+      NullScopes.back()->inverse();
       TraverseStmt(If->getElse());
     }
     // TODO: handle there are both true and false branch, and one or both has
     // return.
-    else if (NullScopes.back()->HasReturned()) {
+    else if (NullScopes.back()->hasReturned()) {
       // If we return inside of an if stmt, put the inverse of the if's checked
       // decls into the function scope. For example:
       //   if (x == NULL) { return 0; }
       // After this if stmt, we are sure that x is non-null in the parent scope.
       auto &&IfScope = NullScopes[NullScopes.size() - 1];
       auto &ParentScope = NullScopes[NullScopes.size() - 2];
-      // Merge into the parent scope the inverse of the current scope.
-      IfScope->Inverse();
-      ParentScope->Merge(*IfScope);
+      // merge into the parent scope the inverse of the current scope.
+      IfScope->inverse();
+      ParentScope->merge(*IfScope);
     }
     NullScopes.pop_back();
 
@@ -180,7 +180,7 @@ public:
               *Context, Expr::NPC_NeverValueDependent) != Expr::NPCK_NotNull) {
         if (DeclRefExpr *LHS =
                 dyn_cast<DeclRefExpr>(BO->getLHS()->IgnoreParenImpCasts())) {
-          NullScopes.back()->SetNullability(LHS->getDecl(),
+          NullScopes.back()->setNullability(LHS->getDecl(),
                                             BO->getOpcode() == BO_EQ);
         }
       }
@@ -189,7 +189,7 @@ public:
               *Context, Expr::NPC_NeverValueDependent) != Expr::NPCK_NotNull) {
         if (DeclRefExpr *RHS =
                 dyn_cast<DeclRefExpr>(BO->getRHS()->IgnoreParenImpCasts())) {
-          NullScopes.back()->SetNullability(RHS->getDecl(),
+          NullScopes.back()->setNullability(RHS->getDecl(),
                                             BO->getOpcode() == BO_EQ);
         }
       }
@@ -200,10 +200,10 @@ public:
     // A "or" operation throws uncertainty to the checked pointers in this
     // if-condition.
     if (BO->getOpcode() == BO_LOr) {
-      NullScopes.back()->SetUncertain(true);
+      NullScopes.back()->setUncertain(true);
     }
     if (BO->getOpcode() == BO_LOr || BO->getOpcode() == BO_LAnd) {
-      NullScopes.back()->SetCompound();
+      NullScopes.back()->setCompound();
     }
 
 
@@ -264,7 +264,7 @@ public:
   }
 
   bool VisitReturnStmt(ReturnStmt *RS) {
-    NullScopes.back()->SetReturned();
+    NullScopes.back()->setReturned();
     return true;
   }
 
@@ -379,7 +379,7 @@ private:
     if (DeclRefExpr const *DRE = dyn_cast<DeclRefExpr>(Stripped)) {
       Decl const *D = DRE->getDecl();
       for (auto &&nullScope : NullScopes) {
-        if (nullScope->IsNotNull(D)) {
+        if (nullScope->isNotNull(D)) {
           return true;
         }
       }
