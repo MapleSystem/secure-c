@@ -103,8 +103,8 @@ public:
     return true;
   }
 
-  bool TraverseVarDecl(VarDecl *VD) {
-    if (isNonnullAnnotated(VD->getType()) && !VD->hasInit()) {
+  bool VisitVarDecl(VarDecl *VD) {
+    if (!isa<ParmVarDecl>(VD) && isNonnull(VD->getType()) && !VD->hasInit()) {
       reportUninitializedNonnull(VD, *Context);
     }
     return true;
@@ -205,7 +205,6 @@ public:
     if (BO->getOpcode() == BO_LOr || BO->getOpcode() == BO_LAnd) {
       NullScopes.back()->setCompound();
     }
-
 
     if (BO->getOpcode() != BO_Assign) {
       return true;
@@ -339,23 +338,12 @@ private:
     return false;
   }
 
-  bool isNonnullAnnotated(const QualType &QT) {
-    if (auto AType = dyn_cast<AttributedType>(QT.getTypePtr())) {
-      if (AType->getImmediateNullability() == NullabilityKind::NonNull) {
-        return true;
-      }
-    }
-    return false;
-  }
-
   bool isNonnull(const QualType &QT) {
     if (auto AType = dyn_cast<AttributedType>(QT.getTypePtr())) {
       if (AType->getImmediateNullability() == NullabilityKind::NonNull) {
         return true;
       }
     }
-    if (isa<ConstantArrayType>(QT)) // e.g. a literal string
-      return true;
     return false;
   }
 
@@ -374,6 +362,9 @@ private:
         return true;
       }
     }
+
+    if (isa<ConstantArrayType>(Stripped->getType())) // e.g. a literal string
+      return true;
 
     // Is the expr referring to a known non-null decl?
     if (DeclRefExpr const *DRE = dyn_cast<DeclRefExpr>(Stripped)) {
