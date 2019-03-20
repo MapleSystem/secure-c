@@ -117,13 +117,11 @@ public:
     if (Definition != FD) {
       for (unsigned int i = 0; i < Definition->getNumParams(); i++) {
         const ParmVarDecl *DeclParam = FD->getParamDecl(i);
-        if (isCandidate(DeclParam->getType())) {
-          const ParmVarDecl *Param = Definition->getParamDecl(i);
-          if (isNonNull(Param)) {
-            makeNonNull(DeclParam);
-          } else {
-            makeNullable(DeclParam);
-          }
+        const ParmVarDecl *Param = Definition->getParamDecl(i);
+        if (isNonNull(Param)) {
+          makeNonNull(DeclParam);
+        } else {
+          makeNullable(DeclParam);
         }
       }
 
@@ -148,18 +146,12 @@ public:
               Context, Expr::NPC_NeverValueDependent) != Expr::NPCK_NotNull) {
         if (DeclRefExpr *LHS =
                 dyn_cast<DeclRefExpr>(BO->getLHS()->IgnoreParenImpCasts())) {
-          // If this variable is not in the list, add it now
-          if (VarDecl *VD = dyn_cast<VarDecl>(LHS->getDecl())) {
-            auto D = PtrVars.find(VD);
-            if (D == PtrVars.end()) {
-              // If this is a null-check inside an assert, assume non-null
-              if (TraversingAssert && BO->getOpcode() == BO_NE) {
-                makeNonNull(VD);
-              } else {
-                // else, assume nullable
-                makeNullable(VD);
-              }
-            }
+          // If this is a null-check inside an assert, assume non-null
+          if (TraversingAssert && BO->getOpcode() == BO_NE) {
+            makeNonNull(LHS);
+          } else {
+            // else, assume nullable
+            makeNullable(LHS);
           }
         }
       }
@@ -169,18 +161,12 @@ public:
               Context, Expr::NPC_NeverValueDependent) != Expr::NPCK_NotNull) {
         if (DeclRefExpr *RHS =
                 dyn_cast<DeclRefExpr>(BO->getRHS()->IgnoreParenImpCasts())) {
-          // If this variable is not in the list, add it now
-          if (VarDecl *VD = dyn_cast<VarDecl>(RHS->getDecl())) {
-            auto D = PtrVars.find(VD);
-            if (D == PtrVars.end()) {
-              // If this is a null-check inside an assert, assume non-null
-              if (TraversingAssert && BO->getOpcode() == BO_NE) {
-                makeNonNull(VD);
-              } else {
-                // else, assume nullable
-                makeNullable(VD);
-              }
-            }
+          // If this is a null-check inside an assert, assume non-null
+          if (TraversingAssert && BO->getOpcode() == BO_NE) {
+            makeNonNull(RHS);
+          } else {
+            // else, assume nullable
+            makeNullable(RHS);
           }
         }
       }
@@ -193,11 +179,14 @@ public:
       if (isNonNull(BO->getLHS())) {
         if (DeclRefExpr *RHS =
                 dyn_cast<DeclRefExpr>(BO->getRHS()->IgnoreParenImpCasts())) {
-          // If this variable is not in the list, add it now as assumed non-null
-          if (VarDecl *VD = dyn_cast<VarDecl>(RHS->getDecl())) {
-            auto D = PtrVars.find(VD);
-            if (D == PtrVars.end()) {
-              makeNonNull(VD);
+          if (isCandidate(RHS->getType())) {
+            // If this variable is not in the list, add it now as assumed
+            // non-null
+            if (VarDecl *VD = dyn_cast<VarDecl>(RHS->getDecl())) {
+              auto D = PtrVars.find(VD);
+              if (D == PtrVars.end()) {
+                makeNonNull(VD);
+              }
             }
           }
         }
@@ -209,8 +198,10 @@ public:
               Context, Expr::NPC_NeverValueDependent) != Expr::NPCK_NotNull) {
         if (DeclRefExpr *LHS =
                 dyn_cast<DeclRefExpr>(BO->getLHS()->IgnoreParenImpCasts())) {
-          if (VarDecl *VD = dyn_cast<VarDecl>(LHS->getDecl())) {
-            makeNullable(VD);
+          if (isCandidate(LHS->getType())) {
+            if (VarDecl *VD = dyn_cast<VarDecl>(LHS->getDecl())) {
+              makeNullable(VD);
+            }
           }
         }
       }
@@ -263,14 +254,7 @@ public:
       if (isNonNull(Param)) {
         if (DeclRefExpr *DRE =
                 dyn_cast<DeclRefExpr>(CE->getArg(i)->IgnoreParenImpCasts())) {
-          if (VarDecl *VD = dyn_cast<VarDecl>(DRE->getDecl())) {
-            // If this variable is not in the list, add it now as assumed
-            // non-null
-            auto D = PtrVars.find(VD);
-            if (D == PtrVars.end()) {
-              makeNonNull(VD);
-            }
-          }
+          makeNonNull(DRE);
         }
       }
     }
@@ -280,15 +264,7 @@ public:
   bool VisitMemberExpr(MemberExpr *ME) {
     if (DeclRefExpr *DRE =
             dyn_cast<DeclRefExpr>(ME->getBase()->IgnoreParenImpCasts())) {
-      if (isCandidate(DRE->getType())) {
-        // If this variable is not in the list, add it now as assumed non-null
-        if (VarDecl *VD = dyn_cast<VarDecl>(DRE->getDecl())) {
-          auto D = PtrVars.find(VD);
-          if (D == PtrVars.end()) {
-            makeNonNull(VD);
-          }
-        }
-      }
+      makeNonNull(DRE);
     }
 
     return true;
@@ -300,13 +276,7 @@ public:
     }
     if (DeclRefExpr *DRE =
             dyn_cast<DeclRefExpr>(UO->getSubExpr()->IgnoreParenImpCasts())) {
-      // If this variable is not in the list, add it now as assumed non-null
-      if (VarDecl *VD = dyn_cast<VarDecl>(DRE->getDecl())) {
-        auto D = PtrVars.find(VD);
-        if (D == PtrVars.end()) {
-          makeNonNull(VD);
-        }
-      }
+      makeNonNull(DRE);
     }
 
     return true;
@@ -315,15 +285,7 @@ public:
   bool VisitArraySubscriptExpr(ArraySubscriptExpr *ASE) {
     if (DeclRefExpr *DRE =
             dyn_cast<DeclRefExpr>(ASE->getBase()->IgnoreParenImpCasts())) {
-      if (isCandidate(DRE->getType())) {
-        if (VarDecl *VD = dyn_cast<VarDecl>(DRE->getDecl())) {
-          // If this variable is not in the list, add it now as assumed non-null
-          auto D = PtrVars.find(VD);
-          if (D == PtrVars.end()) {
-            makeNonNull(VD);
-          }
-        }
-      }
+      makeNonNull(DRE);
     }
 
     return true;
@@ -481,10 +443,31 @@ private:
   }
 
   void makeNonNull(const VarDecl *VD) {
-    annotate(VD, NullabilityKind::NonNull);
+    if (isCandidate(VD->getType())) {
+      // If this variable is not already in the list, add it now as non-null
+      auto D = PtrVars.find(VD);
+      if (D == PtrVars.end()) {
+        annotate(VD, NullabilityKind::NonNull);
+      }
+    }
   }
+
+  void makeNonNull(const DeclRefExpr *DRE) {
+    if (const VarDecl *VD = dyn_cast<VarDecl>(DRE->getDecl())) {
+      makeNonNull(VD);
+    }
+  }
+
   void makeNullable(const VarDecl *VD) {
-    annotate(VD, NullabilityKind::Nullable);
+    if (isCandidate(VD->getType())) {
+      annotate(VD, NullabilityKind::Nullable);
+    }
+  }
+
+  void makeNullable(const DeclRefExpr *DRE) {
+    if (const VarDecl *VD = dyn_cast<VarDecl>(DRE->getDecl())) {
+      makeNullable(VD);
+    }
   }
 
   // Has this function been annotated for nullability?
