@@ -1,12 +1,3 @@
-//------------------------------------------------------------------------------
-// Using AST matchers with RefactoringTool. Demonstrates:
-//
-// * How to use Replacements to collect replacements in a matcher instead of
-//   directly applying fixes to a Rewriter.
-//
-// Eli Bendersky (eliben@gmail.com)
-// This code is in the public domain
-//------------------------------------------------------------------------------
 #include <memory>
 #include <string>
 
@@ -18,6 +9,7 @@
 #include "clang/Frontend/CompilerInstance.h"
 #include "clang/Frontend/FrontendActions.h"
 #include "clang/Frontend/TextDiagnosticPrinter.h"
+#include "clang/Rewrite/Core/Rewriter.h"
 #include "clang/Tooling/CommonOptionsParser.h"
 #include "clang/Tooling/Refactoring.h"
 #include "clang/Tooling/Tooling.h"
@@ -41,6 +33,10 @@ static llvm::cl::opt<SecureCMode> RunMode(
                      clEnumVal(trust, "Trust forced promotions (default)"),
                      clEnumVal(strict, "Disallow forced promotions")),
     llvm::cl::init(trust), llvm::cl::cat(SecureCCategory));
+
+static llvm::cl::opt<bool>
+    InPlace("i", llvm::cl::desc("Inplace edit <file>s, if specified."),
+            llvm::cl::cat(SecureCCategory));
 
 class NullScope {
   // Decls that have been checked (with if-stmt) in this scope.
@@ -530,5 +526,34 @@ int main(int argc, const char **argv) {
   RefactoringTool Tool(op.getCompilations(), op.getSourcePathList());
 
   SecureCConsumerFactory ConsumerFactory(Tool.getReplacements());
-  return Tool.runAndSave(newFrontendActionFactory(&ConsumerFactory).get());
+
+  if (InPlace) {
+    return Tool.runAndSave(newFrontendActionFactory(&ConsumerFactory).get());
+  }
+
+  if (int Result = Tool.run(newFrontendActionFactory(&ConsumerFactory).get())) {
+    return Result;
+  }
+
+  IntrusiveRefCntPtr<DiagnosticOptions> DiagOpts = new DiagnosticOptions();
+  DiagnosticsEngine Diagnostics(
+      IntrusiveRefCntPtr<DiagnosticIDs>(new DiagnosticIDs()), &*DiagOpts,
+      new TextDiagnosticPrinter(llvm::errs(), &*DiagOpts), true);
+  SourceManager Sources(Diagnostics, Tool.getFiles());
+
+  // Apply all replacements to a rewriter.
+  Rewriter Rewrite(Sources, LangOptions());
+  Tool.applyAllReplacements(Rewrite);
+
+  // Query the rewriter for all the files it has rewritten, dumping their
+  // new contents to stdout.
+  for (Rewriter::buffer_iterator I = Rewrite.buffer_begin(),
+                                 E = Rewrite.buffer_end();
+       I != E; ++I) {
+    const FileEntry *Entry = Sources.getFileEntryForID(I->first);
+    llvm::outs() << "Rewrite buffer for file: " << Entry->getName() << "\n";
+    I->second.write(llvm::outs());
+  }
+
+  return 0;
 }

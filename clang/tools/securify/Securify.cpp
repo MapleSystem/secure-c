@@ -25,9 +25,8 @@ static llvm::cl::OptionCategory
     SecurifyCategory("Secure-C Annotation Insertion Tool");
 static llvm::cl::extrahelp CommonHelp(CommonOptionsParser::HelpMessage);
 static llvm::cl::opt<bool>
-    Overwrite("overwrite",
-              llvm::cl::desc("Overwrite the source file with the changes."),
-              llvm::cl::cat(SecurifyCategory));
+    InPlace("i", llvm::cl::desc("Inplace edit <file>s, if specified."),
+            llvm::cl::cat(SecurifyCategory));
 static llvm::cl::opt<bool>
     ParamsOnly("params-only",
                llvm::cl::desc("Only annotate function parameters."),
@@ -558,36 +557,32 @@ int main(int argc, const char **argv) {
 
   SecurifyConsumerFactory ConsumerFactory(Tool.getReplacements());
 
-  if (Overwrite) {
-    if (int Result =
-            Tool.runAndSave(newFrontendActionFactory(&ConsumerFactory).get())) {
-      return Result;
-    }
-  } else {
-    if (int Result =
-            Tool.run(newFrontendActionFactory(&ConsumerFactory).get())) {
-      return Result;
-    }
+  if (InPlace) {
+    return Tool.runAndSave(newFrontendActionFactory(&ConsumerFactory).get());
+  }
 
-    IntrusiveRefCntPtr<DiagnosticOptions> DiagOpts = new DiagnosticOptions();
-    DiagnosticsEngine Diagnostics(
-        IntrusiveRefCntPtr<DiagnosticIDs>(new DiagnosticIDs()), &*DiagOpts,
-        new TextDiagnosticPrinter(llvm::errs(), &*DiagOpts), true);
-    SourceManager Sources(Diagnostics, Tool.getFiles());
+  if (int Result = Tool.run(newFrontendActionFactory(&ConsumerFactory).get())) {
+    return Result;
+  }
 
-    // Apply all replacements to a rewriter.
-    Rewriter Rewrite(Sources, LangOptions());
-    Tool.applyAllReplacements(Rewrite);
+  IntrusiveRefCntPtr<DiagnosticOptions> DiagOpts = new DiagnosticOptions();
+  DiagnosticsEngine Diagnostics(
+      IntrusiveRefCntPtr<DiagnosticIDs>(new DiagnosticIDs()), &*DiagOpts,
+      new TextDiagnosticPrinter(llvm::errs(), &*DiagOpts), true);
+  SourceManager Sources(Diagnostics, Tool.getFiles());
 
-    // Query the rewriter for all the files it has rewritten, dumping their
-    // new contents to stdout.
-    for (Rewriter::buffer_iterator I = Rewrite.buffer_begin(),
-                                   E = Rewrite.buffer_end();
-         I != E; ++I) {
-      const FileEntry *Entry = Sources.getFileEntryForID(I->first);
-      llvm::outs() << "Rewrite buffer for file: " << Entry->getName() << "\n";
-      I->second.write(llvm::outs());
-    }
+  // Apply all replacements to a rewriter.
+  Rewriter Rewrite(Sources, LangOptions());
+  Tool.applyAllReplacements(Rewrite);
+
+  // Query the rewriter for all the files it has rewritten, dumping their
+  // new contents to stdout.
+  for (Rewriter::buffer_iterator I = Rewrite.buffer_begin(),
+                                 E = Rewrite.buffer_end();
+       I != E; ++I) {
+    const FileEntry *Entry = Sources.getFileEntryForID(I->first);
+    llvm::outs() << "Rewrite buffer for file: " << Entry->getName() << "\n";
+    I->second.write(llvm::outs());
   }
 
   return 0;
