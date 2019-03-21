@@ -226,35 +226,43 @@ public:
   }
 
   bool VisitCallExpr(CallExpr *CE) {
-    const FunctionDecl *FD = CE->getDirectCallee();
-    if (FD == NULL) {
+    const DeclRefExpr *DRE =
+        dyn_cast<DeclRefExpr>(CE->getCallee()->IgnoreParenImpCasts());
+    if (!DRE)
+      return true;
+
+    // If the callee is a variable (function pointer), it should be non-null
+    if (const VarDecl *VD = dyn_cast<VarDecl>(DRE->getDecl())) {
+      makeNonNull(VD);
       return true;
     }
 
-    if (!FD->doesThisDeclarationHaveABody()) {
-      // If FD is a declaration without a body, get the definition
-      if (FD->hasBody()) {
-        FD = FD->getDefinition();
-      } else if (isUnannotated(FD)) {
-        // If there is no body, and it is not annotated, emit a warning
-        auto &DE = Context.getDiagnostics();
-        const auto ID = DE.getCustomDiagID(clang::DiagnosticsEngine::Warning,
-                                           "calling unannotated function");
+    if (const FunctionDecl *FD = dyn_cast<FunctionDecl>(DRE->getDecl())) {
+      if (!FD->doesThisDeclarationHaveABody()) {
+        // If FD is a declaration without a body, get the definition
+        if (FD->hasBody()) {
+          FD = FD->getDefinition();
+        } else if (isUnannotated(FD)) {
+          // If there is no body, and it is not annotated, emit a warning
+          auto &DE = Context.getDiagnostics();
+          const auto ID = DE.getCustomDiagID(clang::DiagnosticsEngine::Warning,
+                                             "calling unannotated function");
 
-        auto DB = DE.Report(CE->getBeginLoc(), ID);
-        const auto Range =
-            clang::CharSourceRange::getCharRange(CE->getSourceRange());
-        DB.AddSourceRange(Range);
+          auto DB = DE.Report(CE->getBeginLoc(), ID);
+          const auto Range =
+              clang::CharSourceRange::getCharRange(CE->getSourceRange());
+          DB.AddSourceRange(Range);
+        }
       }
-    }
 
-    for (unsigned int i = 0; i < FD->getNumParams(); i++) {
-      const ParmVarDecl *Param = FD->getParamDecl(i);
-      // Check for non-null parameters
-      if (isNonNull(Param)) {
-        if (DeclRefExpr *DRE =
-                dyn_cast<DeclRefExpr>(CE->getArg(i)->IgnoreParenImpCasts())) {
-          makeNonNull(DRE);
+      for (unsigned int i = 0; i < FD->getNumParams(); i++) {
+        const ParmVarDecl *Param = FD->getParamDecl(i);
+        // Check for non-null parameters
+        if (isNonNull(Param)) {
+          if (DeclRefExpr *DRE =
+                  dyn_cast<DeclRefExpr>(CE->getArg(i)->IgnoreParenImpCasts())) {
+            makeNonNull(DRE);
+          }
         }
       }
     }
@@ -428,6 +436,11 @@ private:
 
     // Is the expr an array (ArrayToPointerDecay)?
     if (isa<ConstantArrayType>(Stripped->getType())) {
+      return true;
+    }
+
+    // Is the expr a function
+    if (isa<FunctionType>(Stripped->getType())) {
       return true;
     }
 
