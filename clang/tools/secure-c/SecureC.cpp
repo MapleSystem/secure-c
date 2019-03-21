@@ -245,7 +245,7 @@ public:
 
   bool VisitMemberExpr(MemberExpr *ME) {
     Expr *Base = ME->getBase();
-    if (!isNonnullCompatible(Base)) {
+    if (ME->isArrow() && !isNonnullCompatible(Base)) {
       reportIllegalAccess(Base->getType(), ME, *Context);
     }
 
