@@ -32,6 +32,16 @@ static llvm::cl::opt<bool> DefaultNullable(
     llvm::cl::desc("Allow unannotated pointers and default to nullable."),
     llvm::cl::cat(SecureCCategory));
 
+enum SecureCMode { debug, trust, strict };
+static llvm::cl::opt<SecureCMode> RunMode(
+    "mode", llvm::cl::desc("set the mode:"),
+    llvm::cl::values(clEnumVal(debug,
+                               "Insert run-time checks instead of reporting "
+                               "illegal access or unsafe promotion errors"),
+                     clEnumVal(trust, "Trust forced promotions (default)"),
+                     clEnumVal(strict, "Disallow forced promotions")),
+    llvm::cl::init(trust), llvm::cl::cat(SecureCCategory));
+
 class NullScope {
   // Decls that have been checked (with if-stmt) in this scope.
   // true = known to be NULL, false = known to be non-NULL
@@ -112,7 +122,10 @@ public:
 
 class SecureCVisitor : public RecursiveASTVisitor<SecureCVisitor> {
 public:
-  explicit SecureCVisitor(ASTContext *Context) : Context(Context) {}
+  explicit SecureCVisitor(
+      ASTContext &Context,
+      std::map<std::string, tooling::Replacements> &FileToReplaces)
+      : Context(Context), FileToReplaces(FileToReplaces) {}
 
   bool shouldTraversePostOrder() { return true; }
 
@@ -120,8 +133,8 @@ public:
     // Don't traverse Decl in system header files or not in source files
     SourceLocation Loc = D->getLocation();
     if (Loc.isValid() &&
-        (Context->getSourceManager().isInSystemHeader(Loc) ||
-         Context->getSourceManager().isInExternCSystemHeader(Loc))) {
+        (Context.getSourceManager().isInSystemHeader(Loc) ||
+         Context.getSourceManager().isInExternCSystemHeader(Loc))) {
       return true;
     }
 
@@ -131,7 +144,7 @@ public:
 
   bool VisitVarDecl(VarDecl *VD) {
     if (!isa<ParmVarDecl>(VD) && isNonnull(VD->getType()) && !VD->hasInit()) {
-      reportUninitializedNonnull(VD, *Context);
+      reportUninitializedNonnull(VD, Context);
     }
     return true;
   }
@@ -142,7 +155,7 @@ public:
       const QualType QT = Param->getType();
       if (dyn_cast<PointerType>(QT.getTypePtr())) {
         if (!DefaultNullable && !isNullibityAnnotated(QT)) {
-          reportUnannotatedParam(FD, Param, false, *Context);
+          reportUnannotatedParam(FD, Param, false, Context);
         }
       }
     }
@@ -205,7 +218,7 @@ public:
     if (BO->getOpcode() == BO_EQ || BO->getOpcode() == BO_NE) {
       // x == NULL OR x != NULL
       if (BO->getRHS()->isNullPointerConstant(
-              *Context, Expr::NPC_NeverValueDependent) != Expr::NPCK_NotNull) {
+              Context, Expr::NPC_NeverValueDependent) != Expr::NPCK_NotNull) {
         if (DeclRefExpr *LHS =
                 dyn_cast<DeclRefExpr>(BO->getLHS()->IgnoreParenImpCasts())) {
           NullScopes.back()->setCheckedNullability(LHS->getDecl(),
@@ -214,7 +227,7 @@ public:
       }
       // NULL == x OR NULL != x
       if (BO->getLHS()->isNullPointerConstant(
-              *Context, Expr::NPC_NeverValueDependent) != Expr::NPCK_NotNull) {
+              Context, Expr::NPC_NeverValueDependent) != Expr::NPCK_NotNull) {
         if (DeclRefExpr *RHS =
                 dyn_cast<DeclRefExpr>(BO->getRHS()->IgnoreParenImpCasts())) {
           NullScopes.back()->setCheckedNullability(RHS->getDecl(),
@@ -246,7 +259,7 @@ public:
     // complain!
     if (isNonnull(LHS->getType())) {
       if (!isNonnullCompatible(RHS)) {
-        reportIllegalCast(LHS->getType(), RHS, *Context);
+        reportIllegalCast(LHS->getType(), RHS, Context);
       }
     }
     // case 2: assign values to a nullable pointer =>
@@ -270,7 +283,7 @@ public:
       if (isNonnull(Param->getType())) {
         const Expr *Arg = CE->getArg(i);
         if (!isNonnullCompatible(Arg)) {
-          reportIllegalCast(Param->getType(), Arg, *Context);
+          reportIllegalCast(Param->getType(), Arg, Context);
         }
       }
     }
@@ -280,7 +293,7 @@ public:
   bool VisitMemberExpr(MemberExpr *ME) {
     Expr *Base = ME->getBase();
     if (ME->isArrow() && !isNonnullCompatible(Base)) {
-      reportIllegalAccess(Base->getType(), ME, *Context);
+      reportIllegalAccess(Base, ME, Context);
     }
 
     return true;
@@ -289,7 +302,7 @@ public:
   bool VisitArraySubscriptExpr(ArraySubscriptExpr *AE) {
     Expr *Base = AE->getBase();
     if (!isNonnullCompatible(Base)) {
-      reportIllegalAccess(Base->getType(), AE, *Context);
+      reportIllegalAccess(Base, AE, Context);
     }
 
     return true;
@@ -301,7 +314,7 @@ public:
     }
     auto expr = UO->getSubExpr()->IgnoreParenImpCasts();
     if (!isNonnullCompatible(expr)) {
-      reportIllegalAccess(expr->getType(), UO, *Context);
+      reportIllegalAccess(expr, UO, Context);
     }
 
     return true;
@@ -313,39 +326,97 @@ public:
   }
 
 private:
-  ASTContext *Context;
+  ASTContext &Context;
 
   std::vector<std::unique_ptr<NullScope>> NullScopes;
 
-  void reportIllegalCast(const QualType &Ty, const Expr *E,
+  std::map<std::string, tooling::Replacements> &FileToReplaces;
+
+  void insertRuntimeCheck(const Expr *Pointer) {
+    QualType Ty = Pointer->getType();
+    std::string TyString = Ty.getAsString();
+    // If the type is already annotated, strip the annotation
+    if (isNullibityAnnotated(Ty)) {
+      AttributedType::stripOuterNullability(Ty);
+      TyString = Ty.getAsString();
+    }
+
+    // Get the original pointer expression as a string
+    std::string PtrExprString;
+    llvm::raw_string_ostream stream(PtrExprString);
+
+    Pointer->printPretty(stream, NULL, Context.getPrintingPolicy());
+    // Flush ostream buffer.
+    stream.flush();
+
+    std::string ReplacementText =
+        "(" + TyString +
+        " _Nonnull)(_CheckNonNull(__FILE__, __LINE__, __extension__ "
+        "__PRETTY_FUNCTION__, " +
+        PtrExprString + "))";
+    Replacement Rep(Context.getSourceManager(), Pointer, ReplacementText);
+
+    // Include the Secure-C header once in each modified file
+    if (FileToReplaces[Rep.getFilePath()].empty()) {
+      Replacement Header(Rep.getFilePath(), 0, 0, "#include <secure_c.h>\n");
+      llvm::Error Err = FileToReplaces[Rep.getFilePath()].add(Header);
+      if (Err) {
+        llvm::errs() << "replacement failed: " << llvm::toString(std::move(Err))
+                     << "\n";
+      }
+    }
+
+    llvm::Error Err = FileToReplaces[Rep.getFilePath()].add(Rep);
+    if (Err) {
+      llvm::errs() << "replacement failed: " << llvm::toString(std::move(Err))
+                   << "\n";
+    }
+  }
+
+  void reportIllegalCast(const QualType &Ty, const Expr *Pointer,
                          const ASTContext &Context) {
     auto &DE = Context.getDiagnostics();
-    const auto ID =
-        DE.getCustomDiagID(clang::DiagnosticsEngine::Error,
-                           "implicit conversion from nullable pointer type "
-                           "'%0' to non-nullable pointer type '%1'");
+    auto ID = DE.getCustomDiagID(clang::DiagnosticsEngine::Error,
+                                 "unsafe promotion from nullable pointer type "
+                                 "'%0' to non-nullable pointer type '%1'");
 
-    auto DB = DE.Report(E->getBeginLoc(), ID);
-    DB.AddString(E->IgnoreParenImpCasts()->getType().getAsString());
+    // In debug mode, we insert a run-time check into the code
+    if (RunMode == debug) {
+      insertRuntimeCheck(Pointer);
+      ID = DE.getCustomDiagID(
+          clang::DiagnosticsEngine::Remark,
+          "unsafe non-null promotion, inserting run-time check");
+    }
+
+    auto DB = DE.Report(Pointer->getBeginLoc(), ID);
+    DB.AddString(Pointer->IgnoreParenImpCasts()->getType().getAsString());
     DB.AddString(Ty.getAsString());
 
     const auto Range =
-        clang::CharSourceRange::getCharRange(E->getSourceRange());
+        clang::CharSourceRange::getCharRange(Pointer->getSourceRange());
     DB.AddSourceRange(Range);
   }
 
-  void reportIllegalAccess(const QualType &Ty, const Expr *E,
+  void reportIllegalAccess(const Expr *Pointer, const Expr *Access,
                            const ASTContext &Context) {
     auto &DE = Context.getDiagnostics();
-    const auto ID =
+    auto ID =
         DE.getCustomDiagID(clang::DiagnosticsEngine::Error,
                            "illegal access of nullable pointer type '%0'");
 
-    auto DB = DE.Report(E->getBeginLoc(), ID);
-    DB.AddString(Ty.getAsString());
+    // In debug mode, we insert a run-time check into the code
+    if (RunMode == debug) {
+      insertRuntimeCheck(Pointer);
+      ID = DE.getCustomDiagID(
+          clang::DiagnosticsEngine::Remark,
+          "illegal access of nullable pointer type, inserting run-time check");
+    }
+
+    auto DB = DE.Report(Access->getBeginLoc(), ID);
+    DB.AddString(Pointer->getType().getAsString());
 
     const auto Range =
-        clang::CharSourceRange::getCharRange(E->getSourceRange());
+        clang::CharSourceRange::getCharRange(Access->getSourceRange());
     DB.AddSourceRange(Range);
   }
 
@@ -429,32 +500,35 @@ private:
 
 class SecureCConsumer : public clang::ASTConsumer {
 public:
-  explicit SecureCConsumer(ASTContext *Context) : Visitor(Context) {}
+  explicit SecureCConsumer(
+
+      std::map<std::string, tooling::Replacements> &FileToReplaces)
+      : FileToReplaces(FileToReplaces) {}
 
   virtual void HandleTranslationUnit(clang::ASTContext &Context) {
+    SecureCVisitor Visitor(Context, FileToReplaces);
     Visitor.TraverseDecl(Context.getTranslationUnitDecl());
   }
 
 private:
-  SecureCVisitor Visitor;
+  std::map<std::string, tooling::Replacements> &FileToReplaces;
 };
 
-class SecureCAction : public clang::ASTFrontendAction {
-public:
-  virtual std::unique_ptr<clang::ASTConsumer>
-  CreateASTConsumer(clang::CompilerInstance &Compiler, llvm::StringRef InFile) {
-    return std::unique_ptr<clang::ASTConsumer>(
-        new SecureCConsumer(&Compiler.getASTContext()));
+struct SecureCConsumerFactory {
+  SecureCConsumerFactory(
+      std::map<std::string, tooling::Replacements> &FileToReplaces)
+      : FileToReplaces(FileToReplaces){};
+  std::unique_ptr<ASTConsumer> newASTConsumer() {
+    std::unique_ptr<ASTConsumer> Consumer(new SecureCConsumer(FileToReplaces));
+    return Consumer;
   }
+  std::map<std::string, tooling::Replacements> &FileToReplaces;
 };
 
 int main(int argc, const char **argv) {
   CommonOptionsParser op(argc, argv, SecureCCategory);
   RefactoringTool Tool(op.getCompilations(), op.getSourcePathList());
 
-  if (int Result = Tool.run(newFrontendActionFactory<SecureCAction>().get())) {
-    return Result;
-  }
-
-  return 0;
+  SecureCConsumerFactory ConsumerFactory(Tool.getReplacements());
+  return Tool.runAndSave(newFrontendActionFactory(&ConsumerFactory).get());
 }

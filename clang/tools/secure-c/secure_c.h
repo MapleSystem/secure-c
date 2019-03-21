@@ -1,0 +1,17 @@
+#ifndef SECURE_C_H
+#define SECURE_C_H 1
+
+#include <stdio.h>
+#include <stdlib.h>
+
+void *_Nonnull _CheckNonNull(const char *_Nonnull file, int line,
+                             const char *_Nonnull func, void *_Nullable p) {
+  if (__builtin_expect(p == ((void *)0), 1)) {
+    fprintf(stderr, "%s:%d: %s: illegal use of NULL pointer\n", file, line,
+            func);
+    abort();
+  }
+  return p;
+}
+
+#endif
