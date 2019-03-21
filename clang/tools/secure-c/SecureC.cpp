@@ -83,7 +83,7 @@ public:
 
   void merge(NullScope &ns) {
     if (ns.isCertain()) {
-      MergedDecls = ns.CheckedDecls;
+      MergedDecls.insert(ns.CheckedDecls.begin(), ns.CheckedDecls.end());
     }
   }
 };
