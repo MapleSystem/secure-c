@@ -93,7 +93,7 @@ public:
       // Parameters that were not annotated should be marked with default
       for (unsigned int i = 0; i < Definition->getNumParams(); i++) {
         const ParmVarDecl *Param = Definition->getParamDecl(i);
-        if (isCandidate(Param->getType())) {
+        if (isCandidate(Param)) {
           auto D = PtrVars.find(Param);
           if (D == PtrVars.end()) {
             if (DefaultNonNull) {
@@ -141,8 +141,7 @@ public:
   bool VisitBinaryOperator(BinaryOperator *BO) {
     if (BO->getOpcode() == BO_EQ || BO->getOpcode() == BO_NE) {
       // x == NULL OR x != NULL
-      if (isCandidate(BO->getLHS()->getType()) &&
-          BO->getRHS()->isNullPointerConstant(
+      if (BO->getRHS()->isNullPointerConstant(
               Context, Expr::NPC_NeverValueDependent) != Expr::NPCK_NotNull) {
         if (DeclRefExpr *LHS =
                 dyn_cast<DeclRefExpr>(BO->getLHS()->IgnoreParenImpCasts())) {
@@ -156,8 +155,7 @@ public:
         }
       }
       // NULL == x OR NULL != x
-      if (isCandidate(BO->getRHS()->getType()) &&
-          BO->getLHS()->isNullPointerConstant(
+      if (BO->getLHS()->isNullPointerConstant(
               Context, Expr::NPC_NeverValueDependent) != Expr::NPCK_NotNull) {
         if (DeclRefExpr *RHS =
                 dyn_cast<DeclRefExpr>(BO->getRHS()->IgnoreParenImpCasts())) {
@@ -179,30 +177,16 @@ public:
       if (isNonNull(BO->getLHS())) {
         if (DeclRefExpr *RHS =
                 dyn_cast<DeclRefExpr>(BO->getRHS()->IgnoreParenImpCasts())) {
-          if (isCandidate(RHS->getType())) {
-            // If this variable is not in the list, add it now as assumed
-            // non-null
-            if (VarDecl *VD = dyn_cast<VarDecl>(RHS->getDecl())) {
-              auto D = PtrVars.find(VD);
-              if (D == PtrVars.end()) {
-                makeNonNull(VD);
-              }
-            }
-          }
+          makeNonNull(RHS);
         }
       }
 
       // Assigning NULL to a pointer (assume nullable)
-      if (isCandidate(BO->getLHS()->getType()) &&
-          BO->getRHS()->isNullPointerConstant(
+      if (BO->getRHS()->isNullPointerConstant(
               Context, Expr::NPC_NeverValueDependent) != Expr::NPCK_NotNull) {
         if (DeclRefExpr *LHS =
                 dyn_cast<DeclRefExpr>(BO->getLHS()->IgnoreParenImpCasts())) {
-          if (isCandidate(LHS->getType())) {
-            if (VarDecl *VD = dyn_cast<VarDecl>(LHS->getDecl())) {
-              makeNullable(VD);
-            }
-          }
+          makeNullable(LHS);
         }
       }
     }
@@ -303,8 +287,7 @@ public:
     for (auto DI = DS->decl_begin(); DI != DS->decl_end(); ++DI) {
       if (VarDecl *VD = dyn_cast<VarDecl>(*DI)) {
         // If it is not a pointer, or it is already annotated, skip it
-        if (!isCandidate(VD->getType()) ||
-            isNullibityAnnotated(VD->getType())) {
+        if (!isCandidate(VD)) {
           continue;
         }
 
@@ -369,6 +352,17 @@ private:
 
   bool isCandidate(const QualType &QT) {
     return QT->isPointerType() && !isNullibityAnnotated(QT);
+  }
+
+  bool isCandidate(const VarDecl *VD) {
+    // Don't annotate a decl from a system header
+    SourceLocation Loc = VD->getLocation();
+    if (Loc.isValid() &&
+        (Context.getSourceManager().isInSystemHeader(Loc) ||
+         Context.getSourceManager().isInExternCSystemHeader(Loc))) {
+      return false;
+    }
+    return isCandidate(VD->getType());
   }
 
   bool isNonNull(QualType QT) {
@@ -456,7 +450,7 @@ private:
   }
 
   void makeNonNull(const VarDecl *VD) {
-    if (isCandidate(VD->getType())) {
+    if (isCandidate(VD)) {
       // If this variable is not already in the list, add it now as non-null
       auto D = PtrVars.find(VD);
       if (D == PtrVars.end()) {
@@ -472,7 +466,7 @@ private:
   }
 
   void makeNullable(const VarDecl *VD) {
-    if (isCandidate(VD->getType())) {
+    if (isCandidate(VD)) {
       annotate(VD, NullabilityKind::Nullable);
     }
   }
@@ -487,7 +481,7 @@ private:
   bool isUnannotated(const FunctionDecl *FD) {
     for (unsigned int i = 0; i < FD->getNumParams(); i++) {
       const ParmVarDecl *Param = FD->getParamDecl(i);
-      if (isCandidate(Param->getType())) {
+      if (isCandidate(Param)) {
         return true;
       }
     }
