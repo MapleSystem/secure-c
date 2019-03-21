@@ -508,10 +508,8 @@ private:
         Annotation = " _Nullable ";
       }
 
-      Replacement Rep(
-          Context.getSourceManager(),
-          VD->getTypeSourceInfo()->getTypeLoc().getEndLoc().getLocWithOffset(1),
-          0, Annotation);
+      Replacement Rep(Context.getSourceManager(), VD->getLocation(), 0,
+                      Annotation);
       llvm::Error Err = FileToReplaces[Rep.getFilePath()].add(Rep);
       if (Err) {
         llvm::errs() << "replacement failed: " << llvm::toString(std::move(Err))
