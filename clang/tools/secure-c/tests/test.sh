@@ -3,7 +3,7 @@
 # Ensure secure-c is in the path
 which secure-c &> /dev/null
 if [[ $? -ne 0 ]]; then
-  echo -e "\e[01;31merror: securify command not found\e[0m" >&2
+  echo -e "\e[01;31merror: secure-c command not found\e[0m" >&2
   exit 1
 fi
 
