@@ -33,10 +33,12 @@ static llvm::cl::opt<bool> DefaultNullable(
     llvm::cl::cat(SecureCCategory));
 
 class NullScope {
-  // Decls that have been checked in this scope.
+  // Decls that have been checked (with if-stmt) in this scope.
   // true = known to be NULL, false = known to be non-NULL
   std::map<Decl *, bool> CheckedDecls;
-  std::map<Decl *, bool> MergedDecls;
+  // Decls that are either assigned in this scope, or checked
+  // in a child scope with early returns.
+  std::map<Decl *, bool> localDecls;
   // Whether we are certain of CheckedDecls or not.
   // For example, uncertain for condition is "p == NULL || q == NULL".
   // Only matters when there are >1 decls in the scope.
@@ -48,7 +50,9 @@ class NullScope {
 
 public:
   NullScope() : Certain(true), Compound(false), Returned(false){};
-  void setNullability(Decl *D, bool isNull) { CheckedDecls[D] = isNull; }
+  void setCheckedNullability(Decl *D, bool isNull) { CheckedDecls[D] = isNull; }
+  void setLocalNullability(Decl *D, bool isNull) { localDecls[D] = isNull; }
+  void cleanLocalNullability() { localDecls = {}; }
   void setUncertain(bool uncertain) { Certain = !uncertain; }
   bool isCertain() { return Certain; }
   void setReturned() { Returned = true; }
@@ -65,9 +69,27 @@ public:
       }
     }
     // The merged DECLs are considered Certain
-    for (auto it : MergedDecls) {
+    for (auto it : localDecls) {
       if (it.first == D) {
         return !it.second;
+      }
+    }
+    return false;
+  }
+
+  // Return true if we definitely know D is null.
+  bool isNull(const Decl *D) {
+    if (Certain) {
+      for (auto it : CheckedDecls) {
+        if (it.first == D) {
+          return it.second;
+        }
+      }
+    }
+    // The merged DECLs are considered Certain
+    for (auto it : localDecls) {
+      if (it.first == D) {
+        return it.second;
       }
     }
     return false;
@@ -83,7 +105,7 @@ public:
 
   void merge(NullScope &ns) {
     if (ns.isCertain()) {
-      MergedDecls.insert(ns.CheckedDecls.begin(), ns.CheckedDecls.end());
+      localDecls.insert(ns.CheckedDecls.begin(), ns.CheckedDecls.end());
     }
   }
 };
@@ -155,6 +177,8 @@ public:
       // In the else case, the values are switched
       // (decls known to be NULL in the if body are non-null in the else)
       NullScopes.back()->inverse();
+      // Local null properties in the true branch don't apply to the false
+      NullScopes.back()->cleanLocalNullability();
       TraverseStmt(If->getElse());
     }
     // TODO: handle there are both true and false branch, and one or both has
@@ -184,8 +208,8 @@ public:
               *Context, Expr::NPC_NeverValueDependent) != Expr::NPCK_NotNull) {
         if (DeclRefExpr *LHS =
                 dyn_cast<DeclRefExpr>(BO->getLHS()->IgnoreParenImpCasts())) {
-          NullScopes.back()->setNullability(LHS->getDecl(),
-                                            BO->getOpcode() == BO_EQ);
+          NullScopes.back()->setCheckedNullability(LHS->getDecl(),
+                                                   BO->getOpcode() == BO_EQ);
         }
       }
       // NULL == x OR NULL != x
@@ -193,8 +217,8 @@ public:
               *Context, Expr::NPC_NeverValueDependent) != Expr::NPCK_NotNull) {
         if (DeclRefExpr *RHS =
                 dyn_cast<DeclRefExpr>(BO->getRHS()->IgnoreParenImpCasts())) {
-          NullScopes.back()->setNullability(RHS->getDecl(),
-                                            BO->getOpcode() == BO_EQ);
+          NullScopes.back()->setCheckedNullability(RHS->getDecl(),
+                                                   BO->getOpcode() == BO_EQ);
         }
       }
 
@@ -213,15 +237,25 @@ public:
     if (BO->getOpcode() != BO_Assign) {
       return true;
     }
-    const Expr *LHS = BO->getLHS();
 
+    return VisitAssign(BO->getLHS(), BO->getRHS());
+  }
+
+  bool VisitAssign(Expr *LHS, Expr *RHS) {
+    // case 1: assign nullable to a nonnull typed pointer =>
+    // complain!
     if (isNonnull(LHS->getType())) {
-      const Expr *RHS = BO->getRHS();
       if (!isNonnullCompatible(RHS)) {
         reportIllegalCast(LHS->getType(), RHS, *Context);
       }
     }
-
+    // case 2: assign values to a nullable pointer =>
+    // update its local status
+    else if (DeclRefExpr *ref =
+                 dyn_cast<DeclRefExpr>(LHS->IgnoreParenImpCasts())) {
+      bool nonNull = isNonnullCompatible(RHS);
+      NullScopes.back()->setLocalNullability(ref->getDecl(), !nonNull);
+    }
     return true;
   }
 
@@ -380,10 +414,12 @@ private:
     // Is the expr referring to a known non-null decl?
     if (DeclRefExpr const *DRE = dyn_cast<DeclRefExpr>(Stripped)) {
       Decl const *D = DRE->getDecl();
-      for (auto &&nullScope : NullScopes) {
-        if (nullScope->isNotNull(D)) {
+      // Early return if we are certain the pointer is null or non-null
+      for (int i = NullScopes.size() - 1; i >= 0; i--) {
+        if (NullScopes[i]->isNull(D))
+          return false;
+        else if (NullScopes[i]->isNotNull(D))
           return true;
-        }
       }
     }
 
