@@ -157,7 +157,7 @@ public:
         bool nonNull = isNonnullCompatible(Init);
         NullScopes.back()->setLocalNullability(VD, !nonNull);
       }
-    } else if (isNonnull(VD->getType())) {
+    } else if (isNonnull(VD->getType()) && !VD->hasExternalStorage()) {
       // Non-null variables must be initialized
       reportUninitializedNonnull(VD, Context);
     }
