@@ -111,7 +111,9 @@ public:
 
   void merge(NullScope &ns) {
     if (ns.isCertain()) {
-      localDecls.insert(ns.CheckedDecls.begin(), ns.CheckedDecls.end());
+      for (auto kv : ns.CheckedDecls) {
+        localDecls[kv.first] = kv.second;
+      }
     }
   }
 };
