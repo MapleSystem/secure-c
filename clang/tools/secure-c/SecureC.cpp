@@ -121,7 +121,10 @@ public:
   explicit SecureCVisitor(
       ASTContext &Context,
       std::map<std::string, tooling::Replacements> &FileToReplaces)
-      : Context(Context), FileToReplaces(FileToReplaces) {}
+      : Context(Context), FileToReplaces(FileToReplaces) {
+    // Create an initial scope for globals
+    NullScopes.push_back(llvm::make_unique<NullScope>());
+  }
 
   bool shouldTraversePostOrder() { return true; }
 
@@ -139,9 +142,26 @@ public:
   }
 
   bool VisitVarDecl(VarDecl *VD) {
-    if (!isa<ParmVarDecl>(VD) && isNonnull(VD->getType()) && !VD->hasInit()) {
+    if (isa<ParmVarDecl>(VD))
+      return true;
+
+    if (VD->hasInit()) {
+      const Expr *Init = VD->getInit();
+      if (isNonnull(VD->getType())) {
+        // A non-null pointer must be initialized with a non-null expression
+        if (!isNonnullCompatible(Init)) {
+          reportIllegalCast(VD->getType(), Init, Context);
+        }
+      } else {
+        // Track the local nullability of this variable
+        bool nonNull = isNonnullCompatible(Init);
+        NullScopes.back()->setLocalNullability(VD, !nonNull);
+      }
+    } else if (isNonnull(VD->getType())) {
+      // Non-null variables must be initialized
       reportUninitializedNonnull(VD, Context);
     }
+
     return true;
   }
 
@@ -269,7 +289,19 @@ public:
   }
 
   bool VisitCallExpr(CallExpr *CE) {
-    const FunctionDecl *FD = CE->getDirectCallee();
+    const DeclRefExpr *DRE =
+        dyn_cast<DeclRefExpr>(CE->getCallee()->IgnoreParenImpCasts());
+    if (!DRE)
+      return true;
+
+    // If the callee is a variable (function pointer), it should be non-null
+    if (const VarDecl *VD = dyn_cast<VarDecl>(DRE->getDecl())) {
+      if (!isNonnullCompatible(DRE)) {
+        reportIllegalAccess(DRE, CE, Context);
+      }
+    }
+
+    const FunctionDecl *FD = dyn_cast<FunctionDecl>(DRE->getDecl());
     if (FD == NULL) {
       return true;
     }
@@ -477,6 +509,11 @@ private:
 
     if (isa<ConstantArrayType>(Stripped->getType())) // e.g. a literal string
       return true;
+
+    // Is the expr a function?
+    if (isa<FunctionType>(Stripped->getType())) {
+      return true;
+    }
 
     // Is the expr referring to a known non-null decl?
     if (DeclRefExpr const *DRE = dyn_cast<DeclRefExpr>(Stripped)) {
