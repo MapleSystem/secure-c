@@ -398,8 +398,52 @@ private:
 
     llvm::Error Err = FileToReplaces[Rep.getFilePath()].add(Rep);
     if (Err) {
-      llvm::errs() << "replacement failed: " << llvm::toString(std::move(Err))
-                   << "\n";
+      llvm::Error HandlerErr = llvm::handleErrors(
+          std::move(Err), [&](const ReplacementError &RE) -> llvm::Error {
+            // This fix works if there is an overlap conflict and the old
+            // replacement is within the new replacement
+            if (RE.get() != replacement_error::overlap_conflict ||
+                Rep.getOffset() > RE.getExistingReplacement()->getOffset() ||
+                (Rep.getOffset() + Rep.getLength()) <
+                    (RE.getExistingReplacement()->getOffset() +
+                     RE.getExistingReplacement()->getLength())) {
+              auto &DE = Context.getDiagnostics();
+              auto ID =
+                  DE.getCustomDiagID(clang::DiagnosticsEngine::Fatal,
+                                     "Run-time check insertion failed:\n%0");
+              auto DB = DE.Report(Pointer->getBeginLoc(), ID);
+              DB.AddString(llvm::toString(std::move(Err)));
+              const auto Range = clang::CharSourceRange::getCharRange(
+                  Pointer->getSourceRange());
+              DB.AddSourceRange(Range);
+            }
+
+            Replacement Old = RE.getExistingReplacement().getValue();
+            unsigned NewLength = Rep.getLength() - Old.getLength() +
+                                 Old.getReplacementText().size();
+            unsigned NewOffset =
+                FileToReplaces[Rep.getFilePath()].getShiftedCodePosition(
+                    Rep.getOffset());
+            unsigned InternalOffset = Old.getOffset() - Rep.getOffset();
+            std::string ExtendedExpr =
+                PtrExprString.substr(0, InternalOffset) +
+                Old.getReplacementText().str() +
+                PtrExprString.substr(InternalOffset + Old.getLength());
+            std::string ReplacementText =
+                "(" + TyString +
+                " _Nonnull)(_CheckNonNull(__FILE__, __LINE__, __extension__ "
+                "__PRETTY_FUNCTION__, " +
+                ExtendedExpr + "))";
+            Replacement NewR(Rep.getFilePath(), NewOffset, NewLength,
+                             ReplacementText);
+            FileToReplaces[Rep.getFilePath()] =
+                FileToReplaces[Rep.getFilePath()].merge(Replacements(NewR));
+            return llvm::Error::success();
+          });
+      if (HandlerErr) {
+        llvm::errs() << "replacement error handler failed:\n"
+                     << llvm::toString(std::move(Err)) << "\n";
+      }
     }
   }
 
