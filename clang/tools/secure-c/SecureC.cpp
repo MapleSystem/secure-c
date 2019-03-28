@@ -38,6 +38,11 @@ static llvm::cl::opt<bool>
     InPlace("i", llvm::cl::desc("Inplace edit <file>s, if specified."),
             llvm::cl::cat(SecureCCategory));
 
+static llvm::cl::opt<bool>
+    CheckRedundant("check-redundant",
+                   llvm::cl::desc("Report redundant null checks."),
+                   llvm::cl::cat(SecureCCategory));
+
 class NullScope {
   // Decls that have been checked (with if-stmt) in this scope.
   // true = known to be NULL, false = known to be non-NULL
@@ -239,6 +244,9 @@ public:
               Context, Expr::NPC_NeverValueDependent) != Expr::NPCK_NotNull) {
         if (DeclRefExpr *LHS =
                 dyn_cast<DeclRefExpr>(BO->getLHS()->IgnoreParenImpCasts())) {
+          if (isNonnullCompatible(LHS)) {
+            warnRedundantCheck(BO);
+          }
           NullScopes.back()->setCheckedNullability(LHS->getDecl(),
                                                    BO->getOpcode() == BO_EQ);
         }
@@ -248,6 +256,9 @@ public:
               Context, Expr::NPC_NeverValueDependent) != Expr::NPCK_NotNull) {
         if (DeclRefExpr *RHS =
                 dyn_cast<DeclRefExpr>(BO->getRHS()->IgnoreParenImpCasts())) {
+          if (isNonnullCompatible(RHS)) {
+            warnRedundantCheck(BO);
+          }
           NullScopes.back()->setCheckedNullability(RHS->getDecl(),
                                                    BO->getOpcode() == BO_EQ);
         }
@@ -516,6 +527,20 @@ private:
     auto DB = DE.Report(VD->getTypeSpecStartLoc(), ID);
     const auto Range =
         clang::CharSourceRange::getCharRange(VD->getSourceRange());
+    DB.AddSourceRange(Range);
+  }
+
+  void warnRedundantCheck(const Expr *Check) {
+    if (!CheckRedundant)
+      return;
+    auto &DE = Context.getDiagnostics();
+    auto ID = DE.getCustomDiagID(clang::DiagnosticsEngine::Warning,
+                                 "possibly redundant null-check");
+
+    auto DB = DE.Report(Check->getExprLoc(), ID);
+
+    const auto Range =
+        clang::CharSourceRange::getCharRange(Check->getSourceRange());
     DB.AddSourceRange(Range);
   }
 
