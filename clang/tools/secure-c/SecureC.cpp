@@ -154,6 +154,9 @@ public:
 
     if (VD->hasInit()) {
       const Expr *Init = VD->getInit();
+      if (VD->getType()->isFunctionPointerType()) {
+        VisitFuncPtrAssign(VD, Init);
+      }
       if (isNonnull(VD->getType())) {
         // A non-null pointer must be initialized with a non-null expression
         if (!isNonnullCompatible(Init)) {
@@ -284,6 +287,10 @@ public:
   }
 
   bool VisitAssign(Expr *LHS, Expr *RHS) {
+    if (LHS->getType()->isFunctionPointerType()) {
+      auto VD = dyn_cast<DeclRefExpr>(LHS->IgnoreParenImpCasts())->getDecl();
+      VisitFuncPtrAssign(VD, RHS);
+    }
     // case 1: assign nullable to a nonnull typed pointer =>
     // complain!
     if (isNonnull(LHS->getType())) {
@@ -297,6 +304,37 @@ public:
                  dyn_cast<DeclRefExpr>(LHS->IgnoreParenImpCasts())) {
       bool nonNull = isNonnullCompatible(RHS);
       NullScopes.back()->setLocalNullability(ref->getDecl(), !nonNull);
+    }
+    return true;
+  }
+
+  // if LHS is a function pointer, make sure _Nonnull or _Nullable
+  // of the return type and parameter types match those of RHS
+  bool VisitFuncPtrAssign(ValueDecl *VD, const Expr *rhs) {
+    auto ptype = VD->getType()->getPointeeType();
+    auto ltype = dyn_cast<FunctionType>(ptype.IgnoreParens());
+    assert(ltype != NULL);
+    const auto *rtype =
+        dyn_cast<FunctionType>(rhs->getType()->getPointeeType().IgnoreParens());
+
+    if (isNonnull(ltype->getReturnType()) &&
+        !isNonnull(rtype->getReturnType())) {
+      reportIllegalCastFuncPtr(rhs, Context);
+      return true;
+    }
+
+    if (auto fptLeft = dyn_cast<FunctionProtoType>(ltype)) {
+      auto fptRight = dyn_cast<FunctionProtoType>(rtype);
+      assert(fptRight);
+      auto lParams = fptLeft->getParamTypes();
+      auto rParams = fptRight->getParamTypes();
+      assert(lParams.size() == rParams.size());
+      for (size_t i = 0; i < lParams.size(); i++) {
+        if (!isNonnull(lParams[i]) && isNonnull(rParams[i])) {
+          reportIllegalCastFuncPtr(rhs, Context);
+          return true;
+        }
+      }
     }
     return true;
   }
@@ -527,6 +565,20 @@ private:
     auto DB = DE.Report(VD->getTypeSpecStartLoc(), ID);
     const auto Range =
         clang::CharSourceRange::getCharRange(VD->getSourceRange());
+    DB.AddSourceRange(Range);
+  }
+
+  void reportIllegalCastFuncPtr(const Expr *rhs, const ASTContext &Context) {
+    auto &DE = Context.getDiagnostics();
+    auto ID = DE.getCustomDiagID(
+        clang::DiagnosticsEngine::Error,
+        "unsafe nullability mismatch in function pointer assignment '%0'");
+
+    auto DB = DE.Report(rhs->getBeginLoc(), ID);
+    DB.AddString(rhs->IgnoreParenImpCasts()->getType().getAsString());
+
+    const auto Range =
+        clang::CharSourceRange::getCharRange(rhs->getSourceRange());
     DB.AddSourceRange(Range);
   }
 
