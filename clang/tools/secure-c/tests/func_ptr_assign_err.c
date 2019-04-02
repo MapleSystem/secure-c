@@ -1,8 +1,8 @@
 //bats @test "func_ptr_assign_err.c: Assigning a function pointer" {
 //bats   run secure-c func_ptr_assign_err.c --
 //bats   [ $status = 1 ]
-//bats   [[ ${lines[0]} =~ ":22:39: error: unsafe nullability mismatch in function pointer assignment" ]]
-//bats   [[ ${lines[0]} =~ ":23:46: error: unsafe nullability mismatch in function pointer assignment" ]]
+//bats   [[ ${lines[0]} =~ ":23:39: error: unsafe nullability mismatch in function pointer assignment" ]]
+//bats   [[ ${lines[3]} =~ ":24:46: error: unsafe nullability mismatch in function pointer assignment" ]]
 //bats }
 #include <stddef.h>
 

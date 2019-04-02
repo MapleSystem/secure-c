@@ -8,7 +8,7 @@
 //bats   [ $status = 0 ]
 //bats   [[ ${lines[0]} =~ ":14:10: remark: illegal access of nullable pointer type, inserting run-time check" ]]
 //bats   [[ ${lines[4]} =~ "#include <secure_c.h>" ]]
-//bats   [[ ${lines[18]} =~ "return *(int * _Nonnull)(_CheckNonNull(__FILE__, __LINE__, __extension__ __PRETTY_FUNCTION__, x));" ]]
+//bats   [[ ${lines[18]} =~ "return *((int * _Nonnull)(_CheckNonNull(__FILE__, __LINE__, __extension__ __PRETTY_FUNCTION__, x)));" ]]
 //bats }
 int foo(int * _Nullable x) {
   return *x;

@@ -136,7 +136,7 @@ public:
   bool shouldTraversePostOrder() { return true; }
 
   bool TraverseDecl(Decl *D) {
-    // Don't traverse Decl in system header files or not in source files
+    // Don't traverse Decl in system header files
     SourceLocation Loc = D->getLocation();
     if (Loc.isValid() &&
         (Context.getSourceManager().isInSystemHeader(Loc) ||
@@ -144,8 +144,7 @@ public:
       return true;
     }
 
-    RecursiveASTVisitor<SecureCVisitor>::TraverseDecl(D);
-    return true;
+    return RecursiveASTVisitor<SecureCVisitor>::TraverseDecl(D);
   }
 
   bool VisitVarDecl(VarDecl *VD) {
@@ -412,88 +411,134 @@ private:
   std::map<std::string, tooling::Replacements> &FileToReplaces;
 
   void insertRuntimeCheck(const Expr *Pointer) {
+    if (Context.getSourceManager().isInSystemMacro(Pointer->getBeginLoc()))
+      return;
+
     QualType Ty = Pointer->getType();
     std::string TyString = Ty.getAsString();
+
     // If the type is already annotated, strip the annotation
     if (isNullibityAnnotated(Ty)) {
       AttributedType::stripOuterNullability(Ty);
       TyString = Ty.getAsString();
     }
 
-    // Get the original pointer expression as a string
-    std::string PtrExprString;
-    llvm::raw_string_ostream stream(PtrExprString);
-
-    Pointer->printPretty(stream, NULL, Context.getPrintingPolicy());
-    // Flush ostream buffer.
-    stream.flush();
+    CharSourceRange Range;
+    StringRef PtrExpr = getSourceString(Pointer, Range);
 
     std::string ReplacementText =
-        "(" + TyString +
+        "((" + TyString +
         " _Nonnull)(_CheckNonNull(__FILE__, __LINE__, __extension__ "
         "__PRETTY_FUNCTION__, " +
-        PtrExprString + "))";
-    Replacement Rep(Context.getSourceManager(), Pointer, ReplacementText);
+        PtrExpr.str() + ")))";
+
+    Replacement Rep(Context.getSourceManager(), Range, ReplacementText);
 
     // Include the Secure-C header once in each modified file
     if (FileToReplaces[Rep.getFilePath()].empty()) {
       Replacement Header(Rep.getFilePath(), 0, 0, "#include <secure_c.h>\n");
       llvm::Error Err = FileToReplaces[Rep.getFilePath()].add(Header);
-      if (Err) {
-        llvm::errs() << "replacement failed: " << llvm::toString(std::move(Err))
-                     << "\n";
-      }
+      llvm::handleAllErrors(std::move(Err), [&](const ReplacementError &RE) {
+        reportFailedHeaderInsert(RE.message());
+      });
     }
 
     llvm::Error Err = FileToReplaces[Rep.getFilePath()].add(Rep);
     if (Err) {
-      llvm::Error HandlerErr = llvm::handleErrors(
-          std::move(Err), [&](const ReplacementError &RE) -> llvm::Error {
-            // This fix works if there is an overlap conflict and the old
-            // replacement is within the new replacement
-            if (RE.get() != replacement_error::overlap_conflict ||
-                Rep.getOffset() > RE.getExistingReplacement()->getOffset() ||
-                (Rep.getOffset() + Rep.getLength()) <
-                    (RE.getExistingReplacement()->getOffset() +
-                     RE.getExistingReplacement()->getLength())) {
-              auto &DE = Context.getDiagnostics();
-              auto ID =
-                  DE.getCustomDiagID(clang::DiagnosticsEngine::Fatal,
-                                     "Run-time check insertion failed:\n%0");
-              auto DB = DE.Report(Pointer->getBeginLoc(), ID);
-              DB.AddString(llvm::toString(std::move(Err)));
-              const auto Range = clang::CharSourceRange::getCharRange(
-                  Pointer->getSourceRange());
-              DB.AddSourceRange(Range);
-            }
+      llvm::Error RepErr =
+          handleReplacementError(std::move(Err), PtrExpr.str(), TyString);
+      llvm::handleAllErrors(std::move(RepErr), [&](const ReplacementError &RE) {
+        reportFailedReplacement(Pointer, RE.message());
+      });
+    }
+  }
 
-            Replacement Old = RE.getExistingReplacement().getValue();
-            unsigned NewLength = Rep.getLength() - Old.getLength() +
+  StringRef getSourceString(const Expr *Pointer, CharSourceRange &Range) {
+    Range = CharSourceRange::getTokenRange(Pointer->getSourceRange());
+    SourceLocation Begin = Pointer->getBeginLoc();
+    SourceLocation End = Pointer->getEndLoc();
+
+    // If this pointer is actually a macro expansion, get the macro location
+    if (Context.getSourceManager().isMacroArgExpansion(Begin, &Begin) ||
+        Context.getSourceManager().isMacroBodyExpansion(Begin)) {
+      // If the end of this expresion is also in the macro arg expansion,
+      // then this replacement is purely within the arg, so it should go
+      // at the expansion site, not in the macro.
+      if (Context.getSourceManager().isMacroArgExpansion(End)) {
+        Begin = Pointer->getBeginLoc();
+      }
+
+      Begin = Context.getSourceManager().getSpellingLoc(Begin);
+      End = Context.getSourceManager().getSpellingLoc(End);
+
+      End = Lexer::getLocForEndOfToken(End, 0, Context.getSourceManager(),
+                                       Context.getLangOpts());
+
+      Range = CharSourceRange::getCharRange(Begin, End);
+    }
+
+    return Lexer::getSourceText(Range, Context.getSourceManager(),
+                                Context.getLangOpts());
+  }
+
+  bool isDuplicateReplacement(Replacement &Old, Replacement &New) {
+    return New.getOffset() >= Old.getOffset() &&
+           (New.getOffset() + New.getLength()) <=
+               (Old.getOffset() + Old.getLength()) &&
+           Old.getReplacementText().find(New.getReplacementText()) !=
+               std::string::npos;
+  }
+
+  bool isExistingReplacementInside(Replacement &Old, Replacement &New) {
+    return New.getOffset() <= Old.getOffset() &&
+           (New.getOffset() + New.getLength()) >=
+               (Old.getOffset() + Old.getLength());
+  }
+
+  llvm::Error handleReplacementError(llvm::Error Err, std::string PtrExpr,
+                                     std::string TyString) {
+    return llvm::handleErrors(
+        std::move(Err), [&](const ReplacementError &RE) -> llvm::Error {
+          if (RE.get() != replacement_error::overlap_conflict) {
+            return llvm::make_error<ReplacementError>(RE);
+          }
+
+          Replacement Old = RE.getExistingReplacement().getValue();
+          Replacement New = RE.getNewReplacement().getValue();
+
+          // Check for the case of a macro replacement that has already
+          // been completed
+          if (isDuplicateReplacement(Old, New)) {
+            return llvm::Error::success();
+          }
+
+          // This fix works if there is an overlap conflict and the old
+          // replacement is within the new replacement.
+          if (isExistingReplacementInside(Old, New)) {
+            unsigned NewLength = New.getLength() - Old.getLength() +
                                  Old.getReplacementText().size();
             unsigned NewOffset =
-                FileToReplaces[Rep.getFilePath()].getShiftedCodePosition(
-                    Rep.getOffset());
-            unsigned InternalOffset = Old.getOffset() - Rep.getOffset();
+                FileToReplaces[New.getFilePath()].getShiftedCodePosition(
+                    New.getOffset());
+            unsigned InternalOffset = Old.getOffset() - New.getOffset();
             std::string ExtendedExpr =
-                PtrExprString.substr(0, InternalOffset) +
+                PtrExpr.substr(0, InternalOffset) +
                 Old.getReplacementText().str() +
-                PtrExprString.substr(InternalOffset + Old.getLength());
+                PtrExpr.substr(InternalOffset + Old.getLength());
             std::string ReplacementText =
-                "(" + TyString +
+                "((" + TyString +
                 " _Nonnull)(_CheckNonNull(__FILE__, __LINE__, __extension__ "
                 "__PRETTY_FUNCTION__, " +
-                ExtendedExpr + "))";
-            Replacement NewR(Rep.getFilePath(), NewOffset, NewLength,
+                ExtendedExpr + ")))";
+            Replacement NewR(New.getFilePath(), NewOffset, NewLength,
                              ReplacementText);
-            FileToReplaces[Rep.getFilePath()] =
-                FileToReplaces[Rep.getFilePath()].merge(Replacements(NewR));
+            FileToReplaces[New.getFilePath()] =
+                FileToReplaces[New.getFilePath()].merge(Replacements(NewR));
             return llvm::Error::success();
-          });
-      if (HandlerErr) {
-        llvm::errs() << "replacement error handler failed:\n"
-                     << llvm::toString(std::move(Err)) << "\n";
-      }
-    }
+          }
+
+          return llvm::make_error<ReplacementError>(RE);
+        });
   }
 
   void reportIllegalCast(const QualType &Ty, const Expr *Pointer,
@@ -530,9 +575,9 @@ private:
     // In debug mode, we insert a run-time check into the code
     if (RunMode == debug) {
       insertRuntimeCheck(Pointer);
-      ID = DE.getCustomDiagID(
-          clang::DiagnosticsEngine::Remark,
-          "illegal access of nullable pointer type, inserting run-time check");
+      ID = DE.getCustomDiagID(clang::DiagnosticsEngine::Remark,
+                              "illegal access of nullable pointer type, "
+                              "inserting run-time check");
     }
 
     auto DB = DE.Report(Access->getBeginLoc(), ID);
@@ -594,6 +639,31 @@ private:
     const auto Range =
         clang::CharSourceRange::getCharRange(Check->getSourceRange());
     DB.AddSourceRange(Range);
+  }
+
+  void reportFailedReplacement(const Expr *Pointer, std::string ErrMsg) {
+    auto &DE = Context.getDiagnostics();
+    const auto ID =
+        DE.getCustomDiagID(clang::DiagnosticsEngine::Fatal,
+                           "Failed to insert run-time check: %0\n"
+                           "Please report this error to the Secure-C team.\n");
+
+    auto DB = DE.Report(Pointer->getExprLoc(), ID);
+    const auto Range =
+        clang::CharSourceRange::getCharRange(Pointer->getSourceRange());
+    DB.AddSourceRange(Range);
+    DB.AddString(ErrMsg);
+  }
+
+  void reportFailedHeaderInsert(std::string ErrMsg) {
+    auto &DE = Context.getDiagnostics();
+    const auto ID =
+        DE.getCustomDiagID(clang::DiagnosticsEngine::Fatal,
+                           "Failed to insert Secure-C header: %0\n"
+                           "Please report this error to the Secure-C team.\n");
+
+    auto DB = DE.Report(ID);
+    DB.AddString(ErrMsg);
   }
 
   bool isNullibityAnnotated(const QualType &QT) {

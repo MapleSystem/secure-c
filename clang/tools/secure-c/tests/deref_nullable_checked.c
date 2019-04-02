@@ -5,5 +5,5 @@
 #include <secure_c.h>
 
 int foo(int * _Nullable x) {
-  return *(int * _Nonnull)(_CheckNonNull(__FILE__, __LINE__, __extension__ __PRETTY_FUNCTION__, x));
+  return *((int * _Nonnull)(_CheckNonNull(__FILE__, __LINE__, __extension__ __PRETTY_FUNCTION__, x)));
 }
