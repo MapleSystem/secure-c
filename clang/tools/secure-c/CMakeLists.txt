@@ -5,6 +5,8 @@ set(LLVM_LINK_COMPONENTS
 
 add_clang_tool(secure-c
   SecureC.cpp
+  SecureCStatistics.cpp
+  NullScope.cpp
   )
 
 target_link_libraries(secure-c

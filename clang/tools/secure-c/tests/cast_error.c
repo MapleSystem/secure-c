@@ -13,3 +13,10 @@ int foo() {
   a = b;
   return 0;
 }
+
+//bats @test "cast_error.c: Statistics: Casting to a non-null pointer" {
+//bats   run secure-c -mode=debug -dump-stats cast_error.c --
+//bats   [ $status = 0 ]
+//bats   [[ ${lines[10]} =~ "Casts:           1"$ ]]
+//bats   [[ ${lines[16]} =~ "Checks inserted:    1"$ ]]
+//bats }

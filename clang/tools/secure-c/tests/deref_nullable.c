@@ -13,3 +13,11 @@
 int foo(int * _Nullable x) {
   return *x;
 }
+
+//bats @test "deref_nullable.c: Statistics: dereferencing a nullable pointer" {
+//bats   run secure-c -dump-stats -mode=debug deref_nullable.c --
+//bats   [ $status = 0 ]
+//bats   [[ ${lines[7]} =~ "Dereferences:    1"$ ]]
+//bats   [[ ${lines[11]} =~ "Total pointer uses: 1"$ ]]
+//bats   [[ ${lines[16]} =~ "Checks inserted:    1"$ ]]
+//bats }

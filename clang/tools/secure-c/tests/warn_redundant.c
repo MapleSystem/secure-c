@@ -11,3 +11,9 @@ int foo(int * _Nonnull x) {
   }
   return 0;
 }
+
+//bats @test "warn_redundant.c: Statistics: Warn about redundant null-check" {
+//bats   run secure-c -dump-stats warn_redundant.c --
+//bats   [ $status = 0 ]
+//bats   [[ ${lines[13]} =~ "Redundant checks: 1"$ ]]
+//bats }
