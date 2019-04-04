@@ -390,20 +390,21 @@ void SecureCVisitor::insertRuntimeCheck(const Expr *Pointer) {
     Stats->insertCheck();
 
   QualType Ty = Pointer->getType();
-  std::string TyString = Ty.getAsString();
 
   // If the type is already annotated, strip the annotation
   if (isNullabilityAnnotated(Ty)) {
     AttributedType::stripOuterNullability(Ty);
-    TyString = Ty.getAsString();
   }
+  QualType modifiedTy = Ty;
+  Ty = Context.getAttributedType(attr::TypeNonNull, modifiedTy, modifiedTy);
+  std::string TyString = Ty.getAsString();
 
   CharSourceRange Range;
   StringRef PtrExpr = getSourceString(Pointer, Range);
 
   std::string ReplacementText =
       "((" + TyString +
-      " _Nonnull)(_CheckNonNull(__FILE__, __LINE__, __extension__ "
+      ")(_CheckNonNull(__FILE__, __LINE__, __extension__ "
       "__PRETTY_FUNCTION__, " +
       PtrExpr.str() + ")))";
 
@@ -508,7 +509,7 @@ llvm::Error SecureCVisitor::handleReplacementError(llvm::Error Err,
               PtrExpr.substr(InternalOffset + Old.getLength());
           std::string ReplacementText =
               "((" + TyString +
-              " _Nonnull)(_CheckNonNull(__FILE__, __LINE__, __extension__ "
+              ")(_CheckNonNull(__FILE__, __LINE__, __extension__ "
               "__PRETTY_FUNCTION__, " +
               ExtendedExpr + ")))";
           Replacement NewR(New.getFilePath(), NewOffset, NewLength,
