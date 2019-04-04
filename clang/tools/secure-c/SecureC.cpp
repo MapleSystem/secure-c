@@ -283,39 +283,37 @@ bool SecureCVisitor::VisitFuncPtrAssign(const QualType &Ty, const Expr *rhs) {
 }
 
 bool SecureCVisitor::VisitCallExpr(CallExpr *CE) {
-  const DeclRefExpr *DRE =
-      dyn_cast<DeclRefExpr>(CE->getCallee()->IgnoreParenImpCasts());
-  if (!DRE)
-    return true;
+  Expr *Callee = CE->getCallee()->IgnoreParenImpCasts();
 
-  // If the callee is a variable (function pointer), it should be non-null
-  if (const VarDecl *VD = dyn_cast<VarDecl>(DRE->getDecl())) {
+  // If the callee is a function pointer, it should be non-null
+  if (Callee->isLValue()) {
     if (Statistics)
-      Stats->trackStatistics(DRE, SecureCStatistics::call);
+      Stats->trackStatistics(Callee, SecureCStatistics::call);
 
-    if (!isNonnullCompatible(DRE)) {
-      reportIllegalAccess(DRE, CE, Context);
+    if (!isNonnullCompatible(Callee)) {
+      reportIllegalAccess(Callee, CE, Context);
     }
   }
 
-  const FunctionDecl *FD = dyn_cast<FunctionDecl>(DRE->getDecl());
-  if (FD == NULL) {
+  const FunctionProtoType *FTy =
+      dyn_cast<FunctionProtoType>(Callee->getType().getTypePtr());
+  if (FTy == nullptr)
     return true;
-  }
 
-  for (unsigned int i = 0; i < FD->getNumParams(); i++) {
-    const ParmVarDecl *Param = FD->getParamDecl(i);
-    if (isAnnotatedNonnull(Param->getType())) {
+  for (unsigned int i = 0; i < FTy->getNumParams(); i++) {
+    const QualType QT = FTy->getParamType(i);
+    if (isAnnotatedNonnull(QT)) {
       const Expr *Arg = CE->getArg(i);
 
       if (Statistics)
         Stats->trackStatistics(Arg, SecureCStatistics::cast);
 
       if (!isNonnullCompatible(Arg)) {
-        reportIllegalCast(Param->getType(), Arg, Context);
+        reportIllegalCast(QT, Arg, Context);
       }
     }
   }
+
   return true;
 }
 
