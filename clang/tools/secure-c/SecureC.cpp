@@ -93,7 +93,7 @@ bool SecureCVisitor::VisitVarDecl(VarDecl *VD) {
   if (VD->hasInit()) {
     const Expr *Init = VD->getInit();
     if (VD->getType()->isFunctionPointerType()) {
-      VisitFuncPtrAssign(VD, Init);
+      VisitFuncPtrAssign(VD->getType(), Init);
     }
     if (isAnnotatedNonnull(VD->getType())) {
       if (Statistics)
@@ -229,8 +229,7 @@ bool SecureCVisitor::VisitBinaryOperator(BinaryOperator *BO) {
 
 bool SecureCVisitor::VisitAssign(Expr *LHS, Expr *RHS) {
   if (LHS->getType()->isFunctionPointerType()) {
-    auto VD = dyn_cast<DeclRefExpr>(LHS->IgnoreParenImpCasts())->getDecl();
-    VisitFuncPtrAssign(VD, RHS);
+    VisitFuncPtrAssign(LHS->getType(), RHS);
   }
   // case 1: assign nullable to a nonnull typed pointer =>
   // complain!
@@ -254,8 +253,8 @@ bool SecureCVisitor::VisitAssign(Expr *LHS, Expr *RHS) {
 
 // if LHS is a function pointer, make sure _Nonnull or _Nullable
 // of the return type and parameter types match those of RHS
-bool SecureCVisitor::VisitFuncPtrAssign(ValueDecl *VD, const Expr *rhs) {
-  auto ptype = VD->getType()->getPointeeType();
+bool SecureCVisitor::VisitFuncPtrAssign(const QualType &Ty, const Expr *rhs) {
+  auto ptype = Ty->getPointeeType();
   auto ltype = dyn_cast<FunctionType>(ptype.IgnoreParens());
   assert(ltype != NULL);
   const auto *rtype =

@@ -28,7 +28,7 @@ public:
   bool TraverseIfStmt(IfStmt *If);
   bool VisitBinaryOperator(BinaryOperator *BO);
   bool VisitAssign(Expr *LHS, Expr *RHS);
-  bool VisitFuncPtrAssign(ValueDecl *VD, const Expr *rhs);
+  bool VisitFuncPtrAssign(const QualType &Ty, const Expr *RHS);
   bool VisitCallExpr(CallExpr *CE);
   bool VisitMemberExpr(MemberExpr *ME);
   bool VisitArraySubscriptExpr(ArraySubscriptExpr *AE);
