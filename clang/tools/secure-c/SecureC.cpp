@@ -666,6 +666,13 @@ bool SecureCVisitor::isNonnullCompatible(Expr const *E) {
   // Strip off
   Expr const *Stripped = E->IgnoreParenImpCasts();
 
+  // We can ignore casts that do not involve nullability
+  while (const CastExpr *CE = dyn_cast<CastExpr>(Stripped)) {
+    if (isNullabilityAnnotated(Stripped->getType()))
+      break;
+    Stripped = CE->getSubExpr();
+  }
+
   // Is the expr attributed with nonnull?
   if (isAnnotatedNonnull(Stripped->getType()))
     return true;
