@@ -393,6 +393,13 @@ private:
   }
 
   bool isNonNull(const Expr *E) {
+    // We can ignore casts that do not involve nullability
+    while (const CastExpr *CE = dyn_cast<CastExpr>(E)) {
+      if (isNullibityAnnotated(E->getType()))
+        break;
+      E = CE->getSubExpr();
+    }
+
     // Check if this expression's type is already annotated with non-null
     if (isNonNull(E->getType())) {
       return true;
