@@ -340,7 +340,7 @@ private:
 
   std::map<std::string, tooling::Replacements> &FileToReplaces;
 
-  bool isNullibityAnnotated(const QualType &QT) {
+  bool isNullabilityAnnotated(const QualType &QT) {
     if (auto AType = dyn_cast<AttributedType>(QT.getTypePtr())) {
       if (AType->getImmediateNullability() != None) {
         return true;
@@ -350,7 +350,7 @@ private:
   }
 
   bool isCandidate(const QualType &QT) {
-    return QT->isPointerType() && !isNullibityAnnotated(QT);
+    return QT->isPointerType() && !isNullabilityAnnotated(QT);
   }
 
   bool isCandidate(const VarDecl *VD) {
@@ -395,7 +395,7 @@ private:
   bool isNonNull(const Expr *E) {
     // We can ignore casts that do not involve nullability
     while (const CastExpr *CE = dyn_cast<CastExpr>(E)) {
-      if (isNullibityAnnotated(E->getType()))
+      if (isNullabilityAnnotated(E->getType()))
         break;
       E = CE->getSubExpr();
     }
