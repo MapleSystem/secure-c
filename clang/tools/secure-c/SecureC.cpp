@@ -670,7 +670,7 @@ bool SecureCVisitor::isNonnullCompatible(Expr const *E) {
   while (const CastExpr *CE = dyn_cast<CastExpr>(Stripped)) {
     if (isNullabilityAnnotated(Stripped->getType()))
       break;
-    Stripped = CE->getSubExpr();
+    Stripped = CE->getSubExpr()->IgnoreParenImpCasts();
   }
 
   // Is the expr attributed with nonnull?
