@@ -142,29 +142,23 @@ public:
       // x == NULL OR x != NULL
       if (BO->getRHS()->isNullPointerConstant(
               Context, Expr::NPC_NeverValueDependent) != Expr::NPCK_NotNull) {
-        if (DeclRefExpr *LHS =
-                dyn_cast<DeclRefExpr>(BO->getLHS()->IgnoreParenImpCasts())) {
+        if (const DeclRefExpr *LHS = unwrapDRE(BO->getLHS())) {
           // If this is a null-check inside an assert, assume non-null
-          if (TraversingAssert && BO->getOpcode() == BO_NE) {
+          if (TraversingAssert && BO->getOpcode() == BO_NE)
             makeNonNull(LHS);
-          } else {
-            // else, assume nullable
+          else // assume nullable
             makeNullable(LHS);
-          }
         }
       }
       // NULL == x OR NULL != x
       if (BO->getLHS()->isNullPointerConstant(
               Context, Expr::NPC_NeverValueDependent) != Expr::NPCK_NotNull) {
-        if (DeclRefExpr *RHS =
-                dyn_cast<DeclRefExpr>(BO->getRHS()->IgnoreParenImpCasts())) {
+        if (const DeclRefExpr *RHS = unwrapDRE(BO->getRHS())) {
           // If this is a null-check inside an assert, assume non-null
-          if (TraversingAssert && BO->getOpcode() == BO_NE) {
+          if (TraversingAssert && BO->getOpcode() == BO_NE)
             makeNonNull(RHS);
-          } else {
-            // else, assume nullable
+          else // assume nullable
             makeNullable(RHS);
-          }
         }
       }
 
@@ -173,21 +167,15 @@ public:
 
     if (BO->getOpcode() == BO_Assign) {
       // Assignment to a non-null (assume non-null)
-      if (isNonNull(BO->getLHS())) {
-        if (DeclRefExpr *RHS =
-                dyn_cast<DeclRefExpr>(BO->getRHS()->IgnoreParenImpCasts())) {
+      if (isNonNull(BO->getLHS()))
+        if (const DeclRefExpr *RHS = unwrapDRE(BO->getRHS()))
           makeNonNull(RHS);
-        }
-      }
 
       // Assigning NULL to a pointer (assume nullable)
       if (BO->getRHS()->isNullPointerConstant(
-              Context, Expr::NPC_NeverValueDependent) != Expr::NPCK_NotNull) {
-        if (DeclRefExpr *LHS =
-                dyn_cast<DeclRefExpr>(BO->getLHS()->IgnoreParenImpCasts())) {
+              Context, Expr::NPC_NeverValueDependent) != Expr::NPCK_NotNull)
+        if (const DeclRefExpr *LHS = unwrapDRE(BO->getLHS()))
           makeNullable(LHS);
-        }
-      }
     }
 
     return true;
@@ -209,8 +197,7 @@ public:
   }
 
   bool VisitCallExpr(CallExpr *CE) {
-    const DeclRefExpr *DRE =
-        dyn_cast<DeclRefExpr>(CE->getCallee()->IgnoreParenImpCasts());
+    const DeclRefExpr *DRE = unwrapDRE(CE->getCallee());
     if (!DRE)
       return true;
 
@@ -242,10 +229,8 @@ public:
         const ParmVarDecl *Param = FD->getParamDecl(i);
         // Check for non-null parameters
         if (isNonNull(Param)) {
-          if (DeclRefExpr *DRE =
-                  dyn_cast<DeclRefExpr>(CE->getArg(i)->IgnoreParenImpCasts())) {
+          if (const DeclRefExpr *DRE = unwrapDRE(CE->getArg(i)))
             makeNonNull(DRE);
-          }
         }
       }
     }
@@ -253,10 +238,8 @@ public:
   }
 
   bool VisitMemberExpr(MemberExpr *ME) {
-    if (DeclRefExpr *DRE =
-            dyn_cast<DeclRefExpr>(ME->getBase()->IgnoreParenImpCasts())) {
+    if (const DeclRefExpr *DRE = unwrapDRE(ME->getBase()))
       makeNonNull(DRE);
-    }
 
     return true;
   }
@@ -265,19 +248,15 @@ public:
     if (UO->getOpcode() != UO_Deref) {
       return true;
     }
-    if (DeclRefExpr *DRE =
-            dyn_cast<DeclRefExpr>(UO->getSubExpr()->IgnoreParenImpCasts())) {
+    if (const DeclRefExpr *DRE = unwrapDRE(UO->getSubExpr()))
       makeNonNull(DRE);
-    }
 
     return true;
   }
 
   bool VisitArraySubscriptExpr(ArraySubscriptExpr *ASE) {
-    if (DeclRefExpr *DRE =
-            dyn_cast<DeclRefExpr>(ASE->getBase()->IgnoreParenImpCasts())) {
+    if (const DeclRefExpr *DRE = unwrapDRE(ASE->getBase()))
       makeNonNull(DRE);
-    }
 
     return true;
   }
@@ -406,43 +385,41 @@ private:
     }
 
     // Check if the referenced decl has been identified as non-null
-    if (const DeclRefExpr *DRE =
-            dyn_cast<DeclRefExpr>(E->IgnoreParenImpCasts())) {
-      if (const VarDecl *VD = dyn_cast<VarDecl>(DRE->getDecl())) {
-        if (isNonNull(VD)) {
+    if (const DeclRefExpr *DRE = unwrapDRE(E))
+      if (const VarDecl *VD = dyn_cast<VarDecl>(DRE->getDecl()))
+        if (isNonNull(VD))
           return true;
-        }
-      }
-    }
 
     return false;
   }
 
   bool isNonNullCompatible(Expr const *E) {
-    // Is the expression non-null annotated
-    if (isNonNull(E)) {
-      return true;
-    }
-
-    // Strip off
+    // Strip off parenthese and implicit casts
     Expr const *Stripped = E->IgnoreParenImpCasts();
 
-    // Is the expr taking an address of an object?
-    if (auto UO = dyn_cast<UnaryOperator>(Stripped)) {
-      if (UO->getOpcode() == UO_AddrOf) {
-        return true;
-      }
+    // We can ignore casts that do not involve nullability
+    while (const CastExpr *CE = dyn_cast<CastExpr>(Stripped)) {
+      if (isNullabilityAnnotated(Stripped->getType()))
+        break;
+      Stripped = CE->getSubExpr()->IgnoreParenImpCasts();
     }
+
+    // Is the expression non-null annotated
+    if (isNonNull(E))
+      return true;
+
+    // Is the expr taking an address of an object?
+    if (auto UO = dyn_cast<UnaryOperator>(Stripped))
+      if (UO->getOpcode() == UO_AddrOf)
+        return true;
 
     // Is the expr an array (ArrayToPointerDecay)?
-    if (isa<ConstantArrayType>(Stripped->getType())) {
+    if (isa<ConstantArrayType>(Stripped->getType()))
       return true;
-    }
 
     // Is the expr a function
-    if (isa<FunctionType>(Stripped->getType())) {
+    if (isa<FunctionType>(Stripped->getType()))
       return true;
-    }
 
     return false;
   }
@@ -529,6 +506,20 @@ private:
                      << "\n";
       }
     }
+  }
+
+  const DeclRefExpr *unwrapDRE(const Expr *E) {
+    // Strip off parentheses and implicit casts
+    Expr const *Stripped = E->IgnoreParenImpCasts();
+
+    // We can ignore casts that do not involve nullability
+    while (const CastExpr *CE = dyn_cast<CastExpr>(Stripped)) {
+      if (isNullabilityAnnotated(Stripped->getType()))
+        break;
+      Stripped = CE->getSubExpr()->IgnoreParenImpCasts();
+    }
+
+    return dyn_cast<DeclRefExpr>(Stripped);
   }
 };
 
