@@ -32,10 +32,7 @@ void SecureCStatistics::trackStatistics(const Expr *E, PtrContext Context) {
 
 void SecureCStatistics::insertCheck() { ++ChecksInserted; }
 
-void SecureCStatistics::duplicateCheck() {
-  --ChecksInserted;
-  ++DuplicateChecks;
-}
+void SecureCStatistics::duplicateCheck() { ++DuplicateChecks; }
 
 void SecureCStatistics::redundantCheck() { ++RedundantChecks; }
 

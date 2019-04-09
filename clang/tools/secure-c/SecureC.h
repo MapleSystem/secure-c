@@ -42,6 +42,7 @@ private:
   ASTContext &Context;
   std::vector<std::unique_ptr<NullScope>> NullScopes;
   std::map<std::string, tooling::Replacements> &FileToReplaces;
+  std::map<uint64_t, bool> InsertedChecks;
   SecureCStatistics *Stats;
 
   void insertRuntimeCheck(const Expr *Pointer);

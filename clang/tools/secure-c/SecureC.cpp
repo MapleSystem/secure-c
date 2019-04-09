@@ -61,6 +61,13 @@ bool isAnnotatedNonnull(const QualType &QT) {
   return false;
 }
 
+static uint64_t keyFromRange(CharSourceRange &Range) {
+  uint64_t RangeKey = Range.getBegin().getRawEncoding();
+  RangeKey <<= 32;
+  RangeKey |= Range.getEnd().getRawEncoding();
+  return RangeKey;
+}
+
 SecureCVisitor::SecureCVisitor(
     ASTContext &Context,
     std::map<std::string, tooling::Replacements> &FileToReplaces)
@@ -383,11 +390,9 @@ void SecureCVisitor::reportStatistics(bool DebugMode) {
 }
 
 void SecureCVisitor::insertRuntimeCheck(const Expr *Pointer) {
+  // Don't insert run-time checks into system macros
   if (Context.getSourceManager().isInSystemMacro(Pointer->getBeginLoc()))
     return;
-
-  if (Statistics)
-    Stats->insertCheck();
 
   QualType Ty = Pointer->getType();
 
@@ -407,6 +412,17 @@ void SecureCVisitor::insertRuntimeCheck(const Expr *Pointer) {
       ")(_CheckNonNull(__FILE__, __LINE__, __extension__ "
       "__PRETTY_FUNCTION__, " +
       PtrExpr.str() + ")))";
+
+  // Avoid duplicate run-time checks
+  if (InsertedChecks.find(keyFromRange(Range)) != InsertedChecks.end()) {
+    if (Statistics)
+      Stats->duplicateCheck();
+    return;
+  }
+
+  if (Statistics)
+    Stats->insertCheck();
+  InsertedChecks[keyFromRange(Range)] = true;
 
   Replacement Rep(Context.getSourceManager(), Range, ReplacementText);
 
@@ -485,14 +501,6 @@ llvm::Error SecureCVisitor::handleReplacementError(llvm::Error Err,
 
         Replacement Old = RE.getExistingReplacement().getValue();
         Replacement New = RE.getNewReplacement().getValue();
-
-        // Check for the case of a macro replacement that has already
-        // been completed
-        if (isDuplicateReplacement(Old, New)) {
-          if (Statistics)
-            Stats->duplicateCheck();
-          return llvm::Error::success();
-        }
 
         // This fix works if there is an overlap conflict and the old
         // replacement is within the new replacement.
