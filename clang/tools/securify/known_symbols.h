@@ -1,6 +1,11 @@
 #include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <sys/stat.h>
+#include <sys/time.h>
+#include <sys/types.h>
+#include <unistd.h>
+#include <utime.h>
 
 void *_Nullable malloc(size_t size);
 void free(void *_Nonnull ptr);
@@ -23,6 +28,17 @@ int vdprintf(int fd, const char *_Nonnull format, va_list ap);
 int vsprintf(char *_Nonnull str, const char *_Nonnull format, va_list ap);
 int vsnprintf(char *_Nonnull str, size_t size, const char *_Nonnull format,
               va_list ap);
+
+int open(const char *_Nonnull pathname, int flags, ...);
+int creat(const char *_Nonnull pathname, mode_t mode);
+int openat(int dirfd, const char *_Nonnull pathname, int flags, ...);
+
+int stat(const char *_Nonnull pathname, struct stat *_Nonnull statbuf);
+int fstat(int fd, struct stat *_Nonnull statbuf);
+int lstat(const char *_Nonnull pathname, struct stat *_Nonnull statbuf);
+
+ssize_t read(int fd, void *_Nullable buf, size_t count);
+ssize_t write(int fd, const void *_Nullable buf, size_t count);
 
 FILE *_Nullable fopen(const char *_Nonnull pathname, const char *_Nonnull mode);
 FILE *_Nullable fdopen(int fd, const char *_Nonnull mode);
@@ -49,8 +65,14 @@ int feof(FILE *_Nonnull stream);
 int ferror(FILE *_Nonnull stream);
 int fileno(FILE *_Nonnull stream);
 
+// From string.h
 char *_Nonnull strcat(char *_Nonnull dest, const char *_Nonnull src);
 char *_Nonnull strncat(char *_Nonnull dest, const char *_Nonnull src, size_t n);
+size_t strlen(const char *_Nonnull s);
+int strcmp(const char *_Nonnull s1, const char *_Nonnull s2);
+int strncmp(const char *_Nonnull s1, const char *_Nonnull s2, size_t n);
+char *_Nonnull strcpy(char *_Nonnull dest, const char *_Nonnull src);
+char *_Nonnull strncpy(char *_Nonnull dest, const char *_Nonnull src, size_t n);
 
 // From ctype.h
 extern const unsigned short int *_Nonnull *_Nonnull __ctype_b_loc(void) __THROW
@@ -62,3 +84,8 @@ extern const __int32_t *_Nonnull *_Nonnull __ctype_toupper_loc(void) __THROW
 
 // From errno.h
 extern int *_Nonnull __errno_location(void) __THROW __attribute_const__;
+
+int utime(const char *_Nonnull filename, const struct utimbuf *_Nullable times);
+int utimes(const char *_Nonnull filename, const struct timeval times[2]);
+
+char *_Nullable getenv(const char *_Nonnull name);
