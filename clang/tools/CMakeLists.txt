@@ -16,6 +16,8 @@ add_clang_subdirectory(clang-refactor)
 
 add_clang_subdirectory(secure-c)
 add_clang_subdirectory(securify)
+add_clang_subdirectory(secure-cc)
+add_clang_subdirectory(securify-cc)
 
 if(CLANG_ENABLE_ARCMT)
   add_clang_subdirectory(arcmt-test)
