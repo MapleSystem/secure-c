@@ -6411,9 +6411,11 @@ static void handleValueRange(Sema &S, Decl *D, const ParsedAttr &AL) {
     return;
   }
 
-  D->addAttr(::new (S.Context)
-                 ValueRangeAttr(AL.getRange(), S.Context, Target, Min, Max,
-                                AL.getAttributeSpellingListIndex()));
+  auto VRA =
+      new (S.Context) ValueRangeAttr(AL.getRange(), S.Context, Target, Min, Max,
+                                     AL.getAttributeSpellingListIndex());
+  D->addAttr(VRA);
+  PVD->addAttr(VRA);
 }
 
 static void handleSecureBuffer(Sema &S, Decl *D, const ParsedAttr &AL) {
@@ -6460,9 +6462,11 @@ static void handleSecureBuffer(Sema &S, Decl *D, const ParsedAttr &AL) {
     return;
   }
 
-  D->addAttr(::new (S.Context)
-                 SecureBufferAttr(AL.getRange(), S.Context, Buffer, Length,
-                                  AL.getAttributeSpellingListIndex()));
+  auto SBA =
+      new (S.Context) SecureBufferAttr(AL.getRange(), S.Context, Buffer, Length,
+                                       AL.getAttributeSpellingListIndex());
+  D->addAttr(SBA);
+  PVD->addAttr(SBA);
 }
 
 //===----------------------------------------------------------------------===//
