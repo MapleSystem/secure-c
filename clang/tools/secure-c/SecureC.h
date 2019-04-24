@@ -68,7 +68,10 @@ private:
   void reportUncheckedSecureBuffer(const Expr *Access, const Expr *Index,
                                    const Expr *Length, const Expr *Cond);
   void reportSecureBufferOutOfRange(const Expr *Access, const Expr *Index);
-
+  void reportSecureBufferInvalidLength(const Expr *LExpr, const Expr *BExpr,
+                                       const Expr *BLExpr);
+  void reportSecureBufferUndeterminedLength(const Expr *LExpr,
+                                            const Expr *BExpr);
   bool isNullabilityAnnotated(const QualType &QT);
   bool hasValueRange(const FunctionDecl *FD);
   bool isNonnullCompatible(Expr const *E);

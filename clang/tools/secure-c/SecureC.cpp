@@ -331,6 +331,94 @@ bool SecureCVisitor::VisitCallExpr(CallExpr *CE) {
     }
   }
 
+  for (auto *SB : CE->getCalleeDecl()->specific_attrs<SecureBufferAttr>()) {
+    Expr *Buffer = SB->getBuffer();
+    Expr *Length = SB->getLength();
+
+    // Get the buffer and length index
+    DeclRefExpr *DRE = cast<DeclRefExpr>(Buffer);
+    ParmVarDecl *PVD = cast<ParmVarDecl>(DRE->getDecl());
+    unsigned BI = PVD->getFunctionScopeIndex();
+    // Check if the length is DeclRefExpr and ParmVarDecl
+    if (!isa<DeclRefExpr>(Length)) {
+      return true;
+    }
+    DRE = cast<DeclRefExpr>(Length);
+    if (!isa<ParmVarDecl>(DRE->getDecl())) {
+      return true;
+    }
+    PVD = cast<ParmVarDecl>(DRE->getDecl());
+    unsigned LI = PVD->getFunctionScopeIndex();
+
+    Expr *BArg = CE->getArg(BI); // Buffer argument
+    Expr *LArg = CE->getArg(LI); // Length argument
+    Expr *Eval = nullptr;        // Expression to be evaluated
+    Expr *BLE = nullptr;         // Buffer length expression
+
+    if (DeclRefExpr *DRE = dyn_cast<DeclRefExpr>(BArg->IgnoreParenImpCasts())) {
+      QualType ArgTy = DRE->getDecl()->getType();
+      QualType LTy;
+      // Buffer can be a static, variable length, or dynamic array
+      if (ArgTy->isArrayType()) {
+        LTy = cast<ArrayType>(ArgTy)->getElementType();
+        if (const ConstantArrayType *CAT =
+                Context.getAsConstantArrayType(ArgTy)) {
+          unsigned Size = static_cast<unsigned>(Context.getTypeSize(LTy));
+          BLE = IntegerLiteral::Create(
+              Context, llvm::APInt(Size, CAT->getSize().getSExtValue()), LTy,
+              SourceLocation());
+        } else if (const VariableArrayType *VAT =
+                       Context.getAsVariableArrayType(ArgTy)) {
+          BLE = VAT->getSizeExpr();
+        }
+      } else if (ArgTy->isPointerType()) {
+        LTy = cast<PointerType>(ArgTy)->getPointeeType();
+        unsigned Size = static_cast<unsigned>(Context.getTypeSize(LTy));
+        IdentifierInfo *II_malloc = &Context.Idents.get(
+            "malloc"); // TODO: need a better way to handle this
+        // Extract the malloc argument expression
+        if (VarDecl *VD = dyn_cast<VarDecl>(DRE->getDecl())) {
+          if (Expr *Init = VD->getInit()) {
+            if (CStyleCastExpr *CSCE = dyn_cast<CStyleCastExpr>(Init)) {
+              if (CallExpr *ICE = dyn_cast<CallExpr>(CSCE->getSubExpr())) {
+                if (FunctionDecl *FD = ICE->getDirectCallee()) {
+                  IdentifierInfo *II = FD->getIdentifier();
+                  if (II == II_malloc) {
+                    Expr *MArg = ICE->getArg(0); // Malloc argument expression
+                    Expr::EvalResult MSize;
+                    if (!MArg->EvaluateAsInt(MSize, Context)) {
+                      return false;
+                    }
+                    unsigned PEleSize = Size / 8; // Pointer element size
+                    unsigned NEleForMalloc =
+                        MSize.Val.getInt().getExtValue() /
+                        PEleSize; // Number of elements for malloc
+                    BLE = IntegerLiteral::Create(
+                        Context, llvm::APInt(Size, NEleForMalloc), LTy,
+                        SourceLocation());
+                  } else {
+                    // Find out if the callee has secure buffer attribute
+                    // Extract the length expression
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+      Eval = new (Context)
+          BinaryOperator(LArg, BLE, BO_LE, LTy, VK_RValue, OK_Ordinary,
+                         SourceLocation(), FPOptions());
+      bool Result;
+      if (Eval->EvaluateAsBooleanCondition(Result, Context)) {
+        if (!Result) {
+          reportSecureBufferInvalidLength(LArg, BArg, BLE);
+        }
+      } else {
+        reportSecureBufferUndeterminedLength(LArg, BArg);
+      }
+    }
+  }
   return true;
 }
 
@@ -800,6 +888,43 @@ void SecureCVisitor::reportSecureBufferOutOfRange(const Expr *Access,
 
   const auto Range =
       clang::CharSourceRange::getCharRange(Access->getSourceRange());
+  DB.AddSourceRange(Range);
+}
+
+void SecureCVisitor::reportSecureBufferInvalidLength(const Expr *LExpr,
+                                                     const Expr *BExpr,
+                                                     const Expr *BLExpr) {
+  auto &DE = Context.getDiagnostics();
+  auto ID = DE.getCustomDiagID(clang::DiagnosticsEngine::Error,
+                               "%0 is an invalid length for %1 (length %2)");
+
+  auto DB = DE.Report(LExpr->getBeginLoc(), ID);
+  Expr::EvalResult Size;
+  LExpr->EvaluateAsInt(Size, Context);
+  DB.AddString(std::to_string(Size.Val.getInt().getExtValue()));
+  const DeclRefExpr *DRE = cast<DeclRefExpr>(BExpr->IgnoreParenImpCasts());
+  DB.AddString(DRE->getNameInfo().getAsString());
+  BLExpr->EvaluateAsInt(Size, Context);
+  DB.AddString(std::to_string(Size.Val.getInt().getExtValue()));
+
+  const auto Range =
+      clang::CharSourceRange::getCharRange(LExpr->getSourceRange());
+  DB.AddSourceRange(Range);
+}
+
+void SecureCVisitor::reportSecureBufferUndeterminedLength(const Expr *LExpr,
+                                                          const Expr *BExpr) {
+  auto &DE = Context.getDiagnostics();
+  auto ID =
+      DE.getCustomDiagID(clang::DiagnosticsEngine::Error,
+                         "%0 is not guaranteed to be a valid length for %1");
+
+  auto DB = DE.Report(LExpr->getBeginLoc(), ID);
+  auto Range = clang::CharSourceRange::getCharRange(LExpr->getSourceRange());
+  DB.AddString(getSourceString(LExpr, Range));
+  const DeclRefExpr *DRE = cast<DeclRefExpr>(BExpr->IgnoreParenImpCasts());
+  DB.AddString(DRE->getNameInfo().getAsString());
+
   DB.AddSourceRange(Range);
 }
 
