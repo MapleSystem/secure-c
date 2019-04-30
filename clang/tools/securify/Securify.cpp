@@ -478,9 +478,16 @@ private:
       Annotation = " _Nullable ";
     }
 
-    Replacement Rep(Context.getSourceManager(),
-                    FD->getReturnTypeSourceRange().getEnd().getLocWithOffset(1),
-                    0, Annotation);
+    SourceRange SR = FD->getReturnTypeSourceRange();
+
+    CharSourceRange R = clang::CharSourceRange::getTokenRange(
+        Context.getSourceManager().getSpellingLoc(SR.getBegin()),
+        Context.getSourceManager().getSpellingLoc(SR.getEnd()));
+
+    std::string ReplText = Lexer::getSourceText(R, Context.getSourceManager(),
+                                                Context.getLangOpts());
+    ReplText += Annotation;
+    Replacement Rep(Context.getSourceManager(), R, ReplText);
     llvm::Error Err = FileToReplaces[Rep.getFilePath()].add(Rep);
     if (Err) {
       llvm::errs() << "replacement failed: " << llvm::toString(std::move(Err))
