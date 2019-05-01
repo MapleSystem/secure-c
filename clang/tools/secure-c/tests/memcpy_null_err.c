@@ -1,4 +1,5 @@
 //bats @test "memcpy_null_err.c: Using memcpy to coerce a _Nullable pointer to a _Nonnull pointer" {
+//bats   skip "Skip until #135 is solved"
 //bats   run secure-c memcpy_null_err.c --
 //bats   [ $status != 0 ]
 //bats }

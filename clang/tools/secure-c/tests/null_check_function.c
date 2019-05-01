@@ -1,4 +1,5 @@
 //bats @test "null_check_function.c: Using a helper function to perform a null check" {
+//bats   skip "Skip until #138 is solved"
 //bats   run secure-c null_check_function.c --
 //bats   [ $status = 0 ]
 //bats }

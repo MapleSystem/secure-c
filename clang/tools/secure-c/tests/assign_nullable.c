@@ -1,4 +1,5 @@
 //bats @test "assign_nullable.c: Assigning a nullable value to a pointer after checking for null" {
+//bats   skip "Skip until #131 is solved"
 //bats   run secure-c assign_nullable.c --
 //bats   [ $status != 0 ]
 //bats }

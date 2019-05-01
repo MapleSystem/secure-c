@@ -13,6 +13,7 @@ void crashes(void) {
 }
 
 //bats @test "pointer_null_pointer_err.c: Casting from nonnull to nullable pointer type is prohibited" {
+//bats   skip "Skip until #136 is solved"
 //bats   run secure-c pointer_null_pointer_err.c --
 //bats   [ $status != 0 ]
 //bats }

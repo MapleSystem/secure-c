@@ -1,4 +1,5 @@
 //bats @test "cast_struct_type.c: Casting a pointer to change nullabilty of its contents" {
+//bats   skip "Skip until #133 is solved"
 //bats   run secure-c cast_struct_type.c --
 //bats   [ $status != 0 ]
 //bats }

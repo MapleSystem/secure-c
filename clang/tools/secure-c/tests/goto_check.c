@@ -1,4 +1,5 @@
 //bats @test "goto_check.c: goto statement skips nonnull pointer check" {
+//bats   skip "Skip until #134 is solved"
 //bats   run secure-c goto_check.c --
 //bats   [ $status != 0 ]
 //bats }

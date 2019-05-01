@@ -1,4 +1,5 @@
 //bats @test "null_check_ternary_right.c: Accessing a pointer in a ternary expression guarded by a check" {
+//bats   skip "Skip until #65 is solved"
 //bats   run secure-c null_check_ternary_right.c --
 //bats   [ $status = 0 ]
 //bats }

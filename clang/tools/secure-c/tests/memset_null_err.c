@@ -1,4 +1,5 @@
 //bats @test "memset_null_err.c: Setting a pointer value to null using memset" {
+//bats   skip "Skip until #135 is solved"
 //bats   run secure-c memset_null_err.c --
 //bats   [ $status != 0 ]
 //bats }
