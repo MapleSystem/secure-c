@@ -73,13 +73,21 @@ int main(int argc_, char *argv_[]) {
       CompilerFlags;
 
   outs() << SecureCCmd << "\n";
-  int rc = system(SecureCCmd.c_str());
-  if (rc) {
-    return rc;
+  int status = system(SecureCCmd.c_str());
+  if (!WIFEXITED(status)) {
+    return 1;
+  } else if (WEXITSTATUS(status) != 0) {
+    return WEXITSTATUS(status);
   }
 
   CompilerCmd += " -I $SECURE_C/clang/tools/secure-c " + CompilerFlags + Inputs;
 
   outs() << CompilerCmd << "\n";
-  return system(CompilerCmd.c_str());
+  status = system(CompilerCmd.c_str());
+  if (!WIFEXITED(status)) {
+    return 1;
+  } else if (WEXITSTATUS(status) != 0) {
+    return WEXITSTATUS(status);
+  }
+  return 0;
 }

@@ -77,9 +77,12 @@ int main(int argc_, char *argv_[]) {
       CompilerFlags;
 
   outs() << SecurifyCmd << "\n";
-  int rc = system(SecurifyCmd.c_str());
-  if (rc) {
-    return rc;
+  int status = system(SecurifyCmd.c_str());
+  outs() << "STATUS IS " << status << "\n";
+  if (!WIFEXITED(status)) {
+    return 1;
+  } else if (WEXITSTATUS(status) != 0) {
+    return WEXITSTATUS(status);
   }
 
   std::string SecureCCmd =
@@ -90,13 +93,21 @@ int main(int argc_, char *argv_[]) {
       CompilerFlags;
 
   outs() << SecureCCmd << "\n";
-  rc = system(SecureCCmd.c_str());
-  if (rc) {
-    return rc;
+  status = system(SecureCCmd.c_str());
+  if (!WIFEXITED(status)) {
+    return 1;
+  } else if (WEXITSTATUS(status) != 0) {
+    return WEXITSTATUS(status);
   }
 
   CompilerCmd += " -I $SECURE_C/clang/tools/secure-c " + CompilerFlags + Inputs;
 
   outs() << CompilerCmd << "\n";
-  return system(CompilerCmd.c_str());
+  status = system(CompilerCmd.c_str());
+  if (!WIFEXITED(status)) {
+    return 1;
+  } else if (WEXITSTATUS(status) != 0) {
+    return WEXITSTATUS(status);
+  }
+  return 0;
 }
