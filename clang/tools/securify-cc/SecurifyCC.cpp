@@ -78,7 +78,6 @@ int main(int argc_, char *argv_[]) {
 
   outs() << SecurifyCmd << "\n";
   int status = system(SecurifyCmd.c_str());
-  outs() << "STATUS IS " << status << "\n";
   if (!WIFEXITED(status)) {
     return 1;
   } else if (WEXITSTATUS(status) != 0) {
