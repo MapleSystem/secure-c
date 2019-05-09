@@ -93,7 +93,8 @@ public:
       for (unsigned int i = 0; i < Definition->getNumParams(); i++) {
         const ParmVarDecl *Param = Definition->getParamDecl(i);
         if (isCandidate(Param)) {
-          auto D = PtrVars.find(Param);
+          auto D = PtrVars.find(
+              Context.getSourceManager().getSpellingLoc(Param->getLocation()));
           if (D == PtrVars.end()) {
             if (DefaultNonNull) {
               makeNonNull(Param);
@@ -304,12 +305,10 @@ private:
   ASTContext &Context;
 
   // Functions that have been analyzed
-  std::set<const FunctionDecl *> FuncsAnalyzed =
-      std::set<const FunctionDecl *>();
+  std::set<const FunctionDecl *> FuncsAnalyzed;
 
   // Pointers that have been identified
-  std::map<const VarDecl *, NullabilityKind> PtrVars =
-      std::map<const VarDecl *, NullabilityKind>();
+  std::map<const SourceLocation, NullabilityKind> PtrVars;
 
   // Track the nullability of a function's return value <valid, non-null>
   Optional<bool> ReturnsNonNull;
@@ -361,7 +360,8 @@ private:
     }
 
     // Check if it is in our map as non-null
-    auto D = PtrVars.find(VD);
+    auto D = PtrVars.find(
+        Context.getSourceManager().getSpellingLoc(VD->getLocation()));
     if (D != PtrVars.end()) {
       if (D->second == NullabilityKind::NonNull) {
         return true;
@@ -429,13 +429,15 @@ private:
     if (ParamsOnly && dyn_cast<ParmVarDecl>(VD) == NULL) {
       return;
     }
-    PtrVars[VD] = Kind;
+    PtrVars[Context.getSourceManager().getSpellingLoc(VD->getLocation())] =
+        Kind;
   }
 
   void makeNonNull(const VarDecl *VD) {
     if (isCandidate(VD)) {
       // If this variable is not already in the list, add it now as non-null
-      auto D = PtrVars.find(VD);
+      auto D = PtrVars.find(
+          Context.getSourceManager().getSpellingLoc(VD->getLocation()));
       if (D == PtrVars.end()) {
         annotate(VD, NullabilityKind::NonNull);
       }
@@ -497,7 +499,7 @@ private:
 
   void createVarDeclReplacements() {
     for (auto const &x : PtrVars) {
-      const VarDecl *VD = x.first;
+      const SourceLocation Loc = x.first;
       NullabilityKind Kind = x.second;
 
       StringRef Annotation = " _Nonnull ";
@@ -505,8 +507,7 @@ private:
         Annotation = " _Nullable ";
       }
 
-      Replacement Rep(Context.getSourceManager(), VD->getLocation(), 0,
-                      Annotation);
+      Replacement Rep(Context.getSourceManager(), Loc, 0, Annotation);
       llvm::Error Err = FileToReplaces[Rep.getFilePath()].add(Rep);
       if (Err) {
         llvm::errs() << "replacement failed: " << llvm::toString(std::move(Err))
