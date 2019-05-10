@@ -43,6 +43,12 @@ static llvm::cl::opt<bool>
                                    "default to nullable (default)."),
                     llvm::cl::cat(SecurifyCategory));
 
+static llvm::cl::opt<bool>
+    UseSAL("use-sal",
+                    llvm::cl::desc("Generate SAL annotations instead of Secure-C annotations"),
+                    llvm::cl::cat(SecurifyCategory));
+
+
 class SecurifyVisitor : public RecursiveASTVisitor<SecurifyVisitor> {
 public:
   explicit SecurifyVisitor(
@@ -511,21 +517,16 @@ private:
   }
 
   void createReturnValueReplacement(FunctionDecl *FD, bool NonNull) {
-    StringRef Annotation = " _Nonnull ";
+    StringRef Annotation = UseSAL ? " _Ret_notnull_ ": " _Nonnull ";
     if (!NonNull) {
-      Annotation = " _Nullable ";
+      Annotation = UseSAL ? " _Ret_maybenull_ " : " _Nullable ";
     }
 
-    SourceRange SR = FD->getReturnTypeSourceRange();
-
-    CharSourceRange R = clang::CharSourceRange::getTokenRange(
-        Context.getSourceManager().getSpellingLoc(SR.getBegin()),
-        Context.getSourceManager().getSpellingLoc(SR.getEnd()));
-
-    std::string ReplText = Lexer::getSourceText(R, Context.getSourceManager(),
-                                                Context.getLangOpts());
-    ReplText += Annotation;
-    Replacement Rep(Context.getSourceManager(), R, ReplText);
+    Replacement Rep(
+        Context.getSourceManager(),
+        UseSAL ? FD->getReturnTypeSourceRange().getBegin().getLocWithOffset(0)
+               : FD->getReturnTypeSourceRange().getEnd().getLocWithOffset(1),
+        0, Annotation);
     llvm::Error Err = FileToReplaces[Rep.getFilePath()].add(Rep);
     if (Err) {
       llvm::errs() << "replacement failed: " << llvm::toString(std::move(Err))
@@ -538,12 +539,13 @@ private:
       const SourceLocation Loc = x.first;
       NullabilityKind Kind = x.second;
 
-      StringRef Annotation = " _Nonnull ";
+      StringRef Annotation = UseSAL ? " _Inout_ " : " _Nonnull ";
       if (Kind == NullabilityKind::Nullable) {
-        Annotation = " _Nullable ";
+        Annotation = UseSAL ? " _Inout_opt_ ": " _Nullable ";
       }
 
-      Replacement Rep(Context.getSourceManager(), Loc, 0, Annotation);
+      Replacement Rep(Context.getSourceManager(), UseSAL ? VD->getBeginLoc() : VD->getLocation(), 0,
+                      Annotation);
       llvm::Error Err = FileToReplaces[Rep.getFilePath()].add(Rep);
       if (Err) {
         llvm::errs() << "replacement failed: " << llvm::toString(std::move(Err))
