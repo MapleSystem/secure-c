@@ -26,6 +26,7 @@ public:
   bool VisitVarDecl(VarDecl *VD);
   bool TraverseFunctionDecl(FunctionDecl *FD);
   bool TraverseIfStmt(IfStmt *If);
+  bool TraverseConditionalOperator(ConditionalOperator *CO);
   bool VisitBinaryOperator(BinaryOperator *BO);
   bool VisitAssign(Expr *LHS, Expr *RHS);
   bool VisitFuncPtrAssign(const QualType &Ty, const Expr *RHS);
@@ -35,6 +36,7 @@ public:
   bool VisitUnaryOperator(UnaryOperator *UO);
   bool VisitReturnStmt(ReturnStmt *RS);
 
+  bool IsNullChecker(Expr *E, DeclRefExpr *&RetDRE, bool &isNull);
   bool isDeterminedNonNull(const Expr *E);
   void reportStatistics(bool DebugMode);
 

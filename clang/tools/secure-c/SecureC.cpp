@@ -167,7 +167,16 @@ bool SecureCVisitor::TraverseIfStmt(IfStmt *If) {
   // A scope for pointers checked by the if-condition
   NullScopes.push_back(llvm::make_unique<NullScope>());
 
-  TraverseStmt(If->getCond());
+  // Analyze the condition expression for Nullability
+  bool isNull = true;
+  DeclRefExpr *DRE = NULL;
+  if (IsNullChecker(If->getCond(), DRE, isNull)) {
+    NullScopes.back()->setCheckedNullability(DRE->getDecl(), isNull);
+  } else {
+    TraverseStmt(If->getCond());
+  }
+
+  // Process the Then condition
   TraverseStmt(If->getThen());
 
   if (If->hasElseStorage()) {
@@ -176,6 +185,8 @@ bool SecureCVisitor::TraverseIfStmt(IfStmt *If) {
     NullScopes.back()->inverse();
     // Local null properties in the true branch don't apply to the false
     NullScopes.back()->cleanLocalNullability();
+
+    // Process the Else condition
     TraverseStmt(If->getElse());
   }
   // TODO: handle there are both true and false branch, and one or both has
@@ -194,6 +205,99 @@ bool SecureCVisitor::TraverseIfStmt(IfStmt *If) {
   NullScopes.pop_back();
 
   return true;
+}
+
+bool SecureCVisitor::TraverseConditionalOperator(ConditionalOperator *CO) {
+  // A scope for pointers checked by the ternary operator
+  NullScopes.push_back(llvm::make_unique<NullScope>());
+
+  // Process the condition
+  bool isNull = true;
+  DeclRefExpr *DRE = NULL;
+  if (IsNullChecker(CO->getCond(), DRE, isNull)) {
+    NullScopes.back()->setCheckedNullability(DRE->getDecl(), isNull);
+  } else {
+    TraverseStmt(CO->getCond());
+  }
+
+  TraverseStmt(CO->getTrueExpr());
+
+  NullScopes.back()->inverse();
+  NullScopes.back()->cleanLocalNullability();
+
+  TraverseStmt(CO->getFalseExpr());
+
+  NullScopes.pop_back();
+
+  return true;
+}
+
+bool SecureCVisitor::IsNullChecker(Expr *E, DeclRefExpr *&RetDRE,
+                                   bool &isNull) {
+  // Need to process 4 cases:
+  // 1) ptr
+  // 2) !ptr
+  // 3) ptr == NULL
+  // 4) ptr != NULL
+  // 5) otherwise return false
+
+  Expr *Stripped = E->IgnoreParenImpCasts();
+
+  // Process 1)
+  if (DeclRefExpr *DRE = dyn_cast<DeclRefExpr>(Stripped)) {
+    // Check if it is a pointer
+    bool isPtr = DRE->getType()->isPointerType();
+    if (!isPtr)
+      return false;
+    isNull = false;
+    RetDRE = DRE;
+    return true;
+  }
+  // Process 2)
+  else if (auto UO = dyn_cast<clang::UnaryOperator>(Stripped)) {
+    if (UO->getOpcode() != UO_LNot)
+      isNull = false;
+    // Check if it is a pointer
+    bool isPtr = DRE->getType()->isPointerType();
+    if (!isPtr)
+      return false;
+    isNull = true;
+    RetDRE = dyn_cast<DeclRefExpr>(UO->getSubExpr()->IgnoreParenImpCasts());
+    return true;
+  }
+  // Process 3) and 4)
+  else if (auto BO = dyn_cast<clang::BinaryOperator>(Stripped)) {
+    if (BO->getOpcode() == BO_EQ || BO->getOpcode() == BO_NE) {
+      // x == NULL OR x != NULL
+      if (BO->getRHS()->isNullPointerConstant(
+              Context, Expr::NPC_NeverValueDependent) != Expr::NPCK_NotNull) {
+        if (DeclRefExpr *LHS =
+                dyn_cast<DeclRefExpr>(BO->getLHS()->IgnoreParenImpCasts())) {
+          if (isNonnullCompatible(LHS)) {
+            warnRedundantCheck(BO);
+          }
+          isNull = (BO->getOpcode() == BO_EQ);
+          RetDRE = LHS;
+          return true;
+        }
+      }
+      // NULL == x OR NULL != x
+      if (BO->getLHS()->isNullPointerConstant(
+              Context, Expr::NPC_NeverValueDependent) != Expr::NPCK_NotNull) {
+        if (DeclRefExpr *RHS =
+                dyn_cast<DeclRefExpr>(BO->getRHS()->IgnoreParenImpCasts())) {
+          if (isNonnullCompatible(RHS)) {
+            warnRedundantCheck(BO);
+          }
+          isNull = (BO->getOpcode() == BO_EQ);
+          RetDRE = RHS;
+          return true;
+        }
+      }
+    }
+  }
+  // Process 5)
+  return false;
 }
 
 bool SecureCVisitor::VisitBinaryOperator(BinaryOperator *BO) {
@@ -524,6 +628,7 @@ bool SecureCVisitor::VisitUnaryOperator(UnaryOperator *UO) {
     return true;
 
   auto expr = UO->getSubExpr()->IgnoreParenImpCasts();
+
   if (Statistics)
     Stats->trackStatistics(expr, SecureCStatistics::deref);
 
