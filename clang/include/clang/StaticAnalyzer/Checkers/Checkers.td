@@ -1050,4 +1050,8 @@ def ValueRangeChecker : Checker<"ValueRange">,
   HelpText<"Check Secure-C's value-range annotations">,
   Documentation<NotDocumented>;
 
+def SecureCTaintChecker : Checker<"SecureCTaint">,
+  HelpText<"Check Secure-C's taint annotations">,
+  Documentation<NotDocumented>;
+
 } // end "secure-c"

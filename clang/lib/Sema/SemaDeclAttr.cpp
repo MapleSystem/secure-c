@@ -6469,6 +6469,124 @@ static void handleSecureBuffer(Sema &S, Decl *D, const ParsedAttr &AL) {
   PVD->addAttr(SBA);
 }
 
+static void handleSecureCIn(Sema &S, Decl *D, const ParsedAttr &AL) {
+  const auto *FD = cast<FunctionDecl>(D);
+
+  if (!isFunctionOrMethod(D)) {
+    S.Diag(D->getLocation(), diag::warn_attribute_wrong_decl_type)
+        << AL << ExpectedFunctionOrMethod;
+    return;
+  }
+
+  Expr *Target = AL.getArgAsExpr(0);
+
+  DeclRefExpr *DRE;
+  if (!isa<DeclRefExpr>(Target)) {
+    if (const auto *UO = dyn_cast<UnaryOperator>(Target)) {
+      if (UO->getOpcode() == UO_Deref) {
+        DRE = cast<DeclRefExpr>(UO->getSubExpr()->IgnoreParenImpCasts());
+      } else {
+        S.Diag(Target->getExprLoc(), diag::err_attribute_argument_n_type)
+            << AL << 1 << AANT_ArgumentParamPointer;
+        return;
+      }
+    } else {
+      S.Diag(Target->getExprLoc(), diag::err_attribute_argument_n_type)
+          << AL << 1 << AANT_ArgumentParamPointer;
+      return;
+    }
+  } else {
+    DRE = cast<DeclRefExpr>(Target);
+  }
+
+  if (!isa<ParmVarDecl>(DRE->getDecl())) {
+    S.Diag(Target->getExprLoc(), diag::err_attribute_argument_n_type)
+        << AL << 1 << AANT_ArgumentParamPointer;
+    return;
+  }
+  auto *PVD = cast<ParmVarDecl>(DRE->getDecl());
+
+  if (PVD->getParentFunctionOrMethod() != FD) {
+    S.Diag(Target->getExprLoc(), diag::err_attribute_argument_n_type)
+        << AL << 1 << AANT_ArgumentParamPointer;
+    return;
+  }
+
+  SmallVector<Expr *, 1> Annotations;
+  checkAttrArgsAreCapabilityObjs(S, D, AL, Annotations, 1);
+
+  D->addAttr(new (S.Context) SecureCInAttr(
+      AL.getRange(), S.Context, Target, Annotations.data(), Annotations.size(),
+      AL.getAttributeSpellingListIndex()));
+}
+
+static void handleSecureCOut(Sema &S, Decl *D, const ParsedAttr &AL) {
+  const auto *FD = cast<FunctionDecl>(D);
+
+  if (!isFunctionOrMethod(D)) {
+    S.Diag(D->getLocation(), diag::warn_attribute_wrong_decl_type)
+        << AL << ExpectedFunctionOrMethod;
+    return;
+  }
+
+  Expr *Target = AL.getArgAsExpr(0);
+
+  DeclRefExpr *DRE;
+  if (!isa<DeclRefExpr>(Target)) {
+    if (const auto *UO = dyn_cast<UnaryOperator>(Target)) {
+      if (UO->getOpcode() == UO_Deref) {
+        DRE = cast<DeclRefExpr>(UO->getSubExpr()->IgnoreParenImpCasts());
+      } else {
+        S.Diag(Target->getExprLoc(), diag::err_attribute_argument_n_type)
+            << AL << 1 << AANT_ArgumentParamPointer;
+        return;
+      }
+    } else {
+      S.Diag(Target->getExprLoc(), diag::err_attribute_argument_n_type)
+          << AL << 1 << AANT_ArgumentParamPointer;
+      return;
+    }
+  } else {
+    DRE = cast<DeclRefExpr>(Target);
+  }
+
+  if (!isa<ParmVarDecl>(DRE->getDecl()) && !isa<FunctionDecl>(DRE->getDecl())) {
+    S.Diag(Target->getExprLoc(), diag::err_attribute_argument_n_type)
+        << AL << 1 << AANT_ArgumentParamPointer;
+    return;
+  }
+
+  if (isa<ParmVarDecl>(DRE->getDecl())) {
+    auto *PVD = cast<ParmVarDecl>(DRE->getDecl());
+
+    if (PVD->getParentFunctionOrMethod() != FD) {
+      S.Diag(Target->getExprLoc(), diag::err_attribute_argument_n_type)
+          << AL << 1 << AANT_ArgumentParamPointer;
+      return;
+    }
+
+    if (!PVD->getType()->isPointerType()) {
+      S.Diag(Target->getExprLoc(), diag::err_attribute_argument_n_type)
+          << AL << 1 << AANT_ArgumentParamPointer;
+      return;
+    }
+  } else {
+    auto *FDecl = cast<FunctionDecl>(DRE->getDecl());
+    if (FDecl != FD) {
+      S.Diag(Target->getExprLoc(), diag::err_attribute_argument_n_type)
+          << AL << 1 << AANT_ArgumentParamPointer;
+      return;
+    }
+  }
+
+  SmallVector<Expr *, 1> Annotations;
+  checkAttrArgsAreCapabilityObjs(S, D, AL, Annotations, 1);
+
+  D->addAttr(new (S.Context) SecureCOutAttr(
+      AL.getRange(), S.Context, Target, Annotations.data(), Annotations.size(),
+      AL.getAttributeSpellingListIndex()));
+}
+
 //===----------------------------------------------------------------------===//
 // Top Level Sema Entry Points
 //===----------------------------------------------------------------------===//
@@ -7209,6 +7327,14 @@ static void ProcessDeclAttribute(Sema &S, Scope *scope, Decl *D,
 
   case ParsedAttr::AT_ValueRange:
     handleValueRange(S, D, AL);
+    break;
+
+  case ParsedAttr::AT_SecureCIn:
+    handleSecureCIn(S, D, AL);
+    break;
+
+  case ParsedAttr::AT_SecureCOut:
+    handleSecureCOut(S, D, AL);
     break;
   }
 }

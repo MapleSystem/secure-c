@@ -3233,3 +3233,27 @@ def ValueRange : InheritableAttr {
   let LateParsed = 1;
   let TemplateDependent = 1;
 }
+
+def SecureCIn : InheritableAttr {
+  // Does not have a [[]] spelling because this attribute requires the ability
+  // to parse function arguments but the attribute is not written in the type
+  // position.
+  let Spellings = [GNU<"secure_c_in">];
+  let Subjects = SubjectList<[Function]>;
+  let Documentation = [Undocumented];
+  let Args = [ExprArgument<"Target">, VariadicExprArgument<"Annotations">];
+  let LateParsed = 1;
+  let TemplateDependent = 1;
+}
+
+def SecureCOut : InheritableAttr {
+  // Does not have a [[]] spelling because this attribute requires the ability
+  // to parse function arguments but the attribute is not written in the type
+  // position.
+  let Spellings = [GNU<"secure_c_out">];
+  let Subjects = SubjectList<[Function]>;
+  let Documentation = [Undocumented];
+  let Args = [ExprArgument<"Target">, VariadicExprArgument<"Annotations">];
+  let LateParsed = 1;
+  let TemplateDependent = 1;
+}
