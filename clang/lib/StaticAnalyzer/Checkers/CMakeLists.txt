@@ -101,6 +101,7 @@ add_clang_library(clangStaticAnalyzerCheckers
   VforkChecker.cpp
   VLASizeChecker.cpp
   ValistChecker.cpp
+  ValueRangeChecker.cpp
   VirtualCallChecker.cpp
 
   LINK_LIBS

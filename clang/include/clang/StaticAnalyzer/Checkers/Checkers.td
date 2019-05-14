@@ -94,6 +94,8 @@ def Debug : Package<"debug">;
 
 def CloneDetectionAlpha : Package<"clone">, ParentPackage<Alpha>;
 
+def SecureC : Package<"secure-c">;
+
 //===----------------------------------------------------------------------===//
 // Core Checkers.
 //===----------------------------------------------------------------------===//
@@ -1037,3 +1039,15 @@ def UnixAPIPortabilityChecker : Checker<"UnixAPI">,
   Documentation<NotDocumented>;
 
 } // end optin.portability
+
+//===----------------------------------------------------------------------===//
+// Secure-C checkers.
+//===----------------------------------------------------------------------===//
+
+let ParentPackage = SecureC in {
+
+def ValueRangeChecker : Checker<"ValueRange">,
+  HelpText<"Check Secure-C's value-range annotations">,
+  Documentation<NotDocumented>;
+
+} // end "secure-c"
