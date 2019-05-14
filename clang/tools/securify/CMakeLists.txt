@@ -9,6 +9,7 @@ add_clang_tool(securify
 
 target_link_libraries(securify
   PRIVATE
+  clangAST
   clangBasic
   clangFrontend
   clangRewrite

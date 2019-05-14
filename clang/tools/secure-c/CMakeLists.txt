@@ -11,6 +11,7 @@ add_clang_tool(secure-c
 
 target_link_libraries(secure-c
   PRIVATE
+  clangAST
   clangBasic
   clangFrontend
   clangLex
