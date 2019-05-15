@@ -674,6 +674,23 @@ public:
                        const EvalCallOptions &CallOpts = {});
 
 private:
+  /// Applies function preconditions, updating \p State.
+  /// Used when constructing the initial state for a function.
+  void applyFunctionPreconditions(ProgramStateRef &State,
+                                  const LocationContext *InitLoc,
+                                  const FunctionDecl *FD);
+  /// Applies function preconditions specifically for `main`, updating
+  /// \p State.   Only applies the preconditions if the given function
+  /// is `main` and it satisfies all criteria for the preconditions to apply.
+  void applyFunctionPreconditionsForMain(ProgramStateRef &State,
+                                         const LocationContext *InitLoc,
+                                         const FunctionDecl *FD);
+  /// Applies a precondition given by a value range attribute, restricting the
+  /// value range of a variable.  Updates \p State.
+  void applyValueRangePrecondition(ProgramStateRef &State,
+                                   const LocationContext *InitLoc,
+                                   DefinedOrUnknownSVal ParamValue,
+                                   const ValueRangeAttr *VRA);
   ProgramStateRef finishArgumentConstruction(ProgramStateRef State,
                                              const CallEvent &Call);
   void finishArgumentConstruction(ExplodedNodeSet &Dst, ExplodedNode *Pred,

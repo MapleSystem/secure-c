@@ -222,43 +222,9 @@ ProgramStateRef ExprEngine::getInitialState(const LocationContext *InitLoc) {
   const Decl *D = InitLoc->getDecl();
 
   // Preconditions.
-  // FIXME: It would be nice if we had a more general mechanism to add
-  // such preconditions.  Some day.
-  do {
-    if (const auto *FD = dyn_cast<FunctionDecl>(D)) {
-      // Precondition: the first argument of 'main' is an integer guaranteed
-      //  to be > 0.
-      const IdentifierInfo *II = FD->getIdentifier();
-      if (!II || !(II->getName() == "main" && FD->getNumParams() > 0))
-        break;
-
-      const ParmVarDecl *PD = FD->getParamDecl(0);
-      QualType T = PD->getType();
-      const auto *BT = dyn_cast<BuiltinType>(T);
-      if (!BT || !BT->isInteger())
-        break;
-
-      const MemRegion *R = state->getRegion(PD, InitLoc);
-      if (!R)
-        break;
-
-      SVal V = state->getSVal(loc::MemRegionVal(R));
-      SVal Constraint_untested = evalBinOp(state, BO_GT, V,
-                                           svalBuilder.makeZeroVal(T),
-                                           svalBuilder.getConditionType());
-
-      Optional<DefinedOrUnknownSVal> Constraint =
-          Constraint_untested.getAs<DefinedOrUnknownSVal>();
-
-      if (!Constraint)
-        break;
-
-      if (ProgramStateRef newState = state->assume(*Constraint, true))
-        state = newState;
-    }
-    break;
+  if (const auto *FD = dyn_cast<FunctionDecl>(D)) {
+    applyFunctionPreconditions(state, InitLoc, FD);
   }
-  while (false);
 
   if (const auto *MD = dyn_cast<ObjCMethodDecl>(D)) {
     // Precondition: 'self' is always non-null upon entry to an Objective-C
@@ -292,6 +258,83 @@ ProgramStateRef ExprEngine::getInitialState(const LocationContext *InitLoc) {
   }
 
   return state;
+}
+
+void ExprEngine::applyFunctionPreconditionsForMain(
+    ProgramStateRef &State,
+    const LocationContext *InitLoc,
+    const FunctionDecl *FD) {
+  // Precondition: the first argument of 'main' is an integer guaranteed
+  //  to be > 0.
+  const IdentifierInfo *II = FD->getIdentifier();
+  if (!II || !(II->getName() == "main" && FD->getNumParams() > 0))
+    return;
+
+  const ParmVarDecl *PD = FD->getParamDecl(0);
+  QualType T = PD->getType();
+  const auto *BT = dyn_cast<BuiltinType>(T);
+  if (!BT || !BT->isInteger())
+    return;
+
+  const MemRegion *R = State->getRegion(PD, InitLoc);
+  if (!R)
+    return;
+
+  SVal V = State->getSVal(loc::MemRegionVal(R));
+  SVal Constraint_untested = evalBinOp(State, BO_GT, V,
+                                       svalBuilder.makeZeroVal(T),
+                                       svalBuilder.getConditionType());
+
+  Optional<DefinedOrUnknownSVal> Constraint =
+      Constraint_untested.getAs<DefinedOrUnknownSVal>();
+
+  if (!Constraint)
+    return;
+
+  if (ProgramStateRef newState = State->assume(*Constraint, true))
+    State = newState;
+}
+
+void ExprEngine::applyFunctionPreconditions(ProgramStateRef &State,
+                                            const LocationContext *InitLoc,
+                                            const FunctionDecl *FD) {
+  applyFunctionPreconditionsForMain(State, InitLoc, FD);
+
+  // Attributes on function parameters
+  for (unsigned int i = 0; i < FD->getNumParams(); i++) {
+    const ParmVarDecl *PVD = FD->getParamDecl(i);
+
+    // Find parameter variable's symbolic value
+    Loc ParamLoc = State->getLValue(PVD, InitLoc);
+    DefinedOrUnknownSVal ParamValue = State->getSVal(ParamLoc, PVD->getType())
+        .castAs<DefinedOrUnknownSVal>();
+
+    if (ValueRangeAttr *VRA = PVD->getAttr<ValueRangeAttr>()) {
+      applyValueRangePrecondition(State, InitLoc, ParamValue, VRA);
+    }
+  }
+}
+
+void ExprEngine::applyValueRangePrecondition(ProgramStateRef &State,
+                                             const LocationContext *InitLoc,
+                                             DefinedOrUnknownSVal ParamValue,
+                                             const ValueRangeAttr *VRA) {
+  Expr *MinExpr = VRA->getMin();
+  Expr *MaxExpr = VRA->getMax();
+
+  Expr::EvalResult MinExprResult;
+  if (!MinExpr->EvaluateAsInt(MinExprResult, getContext())) {
+    llvm_unreachable("Minimum value is not an integer constant");
+  }
+  llvm::APSInt LoBound = MinExprResult.Val.getInt();
+
+  Expr::EvalResult MaxExprResult;
+  if (!MaxExpr->EvaluateAsInt(MaxExprResult, getContext())) {
+    llvm_unreachable("Maximum value is not an integer constant");
+  }
+  llvm::APSInt HiBound = MaxExprResult.Val.getInt();
+
+  State = State->assumeInclusiveRange(ParamValue, LoBound, HiBound, true);
 }
 
 ProgramStateRef ExprEngine::createTemporaryRegionIfNeeded(
