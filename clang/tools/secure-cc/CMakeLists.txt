@@ -9,6 +9,7 @@ add_clang_tool(secure-cc
 
 target_link_libraries(secure-cc
   PRIVATE
+  clangDriver
   clangTooling
   clangToolingCore
   )
