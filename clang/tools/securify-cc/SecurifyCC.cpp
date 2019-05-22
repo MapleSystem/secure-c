@@ -69,12 +69,10 @@ int main(int argc_, char *argv_[]) {
   InputsStream.flush();
   CompilerFlagsStream.flush();
 
-  std::string SecurifyCmd =
-      "securify -i " + SecurifyFlags + " " + Inputs +
-      "-- -Wno-nullability-completeness -ferror-limit=0 "
-      "-include $SECURE_C/clang/tools/securify/known_symbols.h "
-      "-I $SECURE_C/clang/tools/secure-c " +
-      CompilerFlags;
+  std::string SecurifyCmd = "securify -i " + SecurifyFlags + " " + Inputs +
+                            "-- -Wno-nullability-completeness -ferror-limit=0 "
+                            "-I $SECURE_C/clang/tools/secure-c " +
+                            CompilerFlags;
 
   outs() << SecurifyCmd << "\n";
   int status = system(SecurifyCmd.c_str());
@@ -84,12 +82,11 @@ int main(int argc_, char *argv_[]) {
     return WEXITSTATUS(status);
   }
 
-  std::string SecureCCmd =
-      "secure-c -i -mode=debug " + SecureCFlags + " " + Inputs +
-      " -- -Wno-nullability-completeness -ferror-limit=0 "
-      "-include $SECURE_C/clang/tools/securify/known_symbols.h "
-      "-I $SECURE_C/clang/tools/secure-c " +
-      CompilerFlags;
+  std::string SecureCCmd = "secure-c -i -mode=debug " + SecureCFlags + " " +
+                           Inputs +
+                           " -- -Wno-nullability-completeness -ferror-limit=0 "
+                           "-I $SECURE_C/clang/tools/secure-c " +
+                           CompilerFlags;
 
   outs() << SecureCCmd << "\n";
   status = system(SecureCCmd.c_str());
