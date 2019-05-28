@@ -78,7 +78,13 @@ SVal SecureBufferChecker::createSValForExpr(
   if (const IntegerLiteral *IL = dyn_cast<IntegerLiteral>(E)) {
     return SVB.makeIntVal(IL);
   } else if (const DeclRefExpr *DRE = dyn_cast<DeclRefExpr>(E)) {
-    return ParamToArg[DRE->getDecl()];
+    std::map<const Decl *, SVal>::iterator found =
+        ParamToArg.find(DRE->getDecl());
+    if (found == ParamToArg.end()) {
+      return UndefinedVal();
+    } else {
+      return found->second;
+    }
   } else if (const BinaryOperator *BO = dyn_cast<BinaryOperator>(E)) {
     return SVB.evalBinOp(C.getState(), BO->getOpcode(),
                          createSValForExpr(SVB, C, ParamToArg, BO->getLHS()),
@@ -92,6 +98,8 @@ SVal SecureBufferChecker::createSValForExpr(
   return UndefinedVal();
 }
 
+// On function calls, check if the pointer passed to a parameter with a
+// secure-buffer annotation has a valid length.
 void SecureBufferChecker::checkPreCall(const CallEvent &Call,
                                        CheckerContext &C) const {
   const AnyFunctionCall *FC = dyn_cast<AnyFunctionCall>(&Call);
@@ -117,17 +125,26 @@ void SecureBufferChecker::checkPreCall(const CallEvent &Call,
       SVal ArgVal = Call.getArgSVal(i);
       const MemRegion *R = ArgVal.getAsRegion();
       if (!R) {
-        return;
+        reportWarning(C, Call.getArgExpr(i));
+        continue;
       }
 
-      const ElementRegion *ER = dyn_cast<ElementRegion>(R);
-      if (!ER) {
-        return;
+      const SubRegion *SR = dyn_cast_or_null<SubRegion>(R->getBaseRegion());
+      if (!SR) {
+        reportWarning(C, Call.getArgExpr(i));
+        continue;
       }
+      DefinedOrUnknownSVal Extent = SR->getExtent(SVB);
 
-      // TODO: Replace this with getting some value stored in the state
-      DefinedOrUnknownSVal NumElements = C.getStoreManager().getSizeInElements(
-          state, ER->getSuperRegion(), ER->getValueType());
+      const PointerType *PT =
+          dyn_cast<PointerType>(PVD->getType().getCanonicalType().getTypePtr());
+      assert(PT);
+      QualType ElementType = PT->getPointeeType();
+      ASTContext &AstContext = C.getASTContext();
+      CharUnits TypeSize = AstContext.getTypeSizeInChars(ElementType);
+      SVal NumElements = SVB.evalBinOp(
+          state, BO_Div, Extent, SVB.makeArrayIndex(TypeSize.getQuantity()),
+          SVB.getArrayIndexType());
 
       const Expr *ReqLengthExpr = SBA->getLength();
       DefinedOrUnknownSVal ReqLength =

@@ -24,23 +24,26 @@ int foo(int w, int x, int y, int z)
   int *E = malloc(sizeof(int) * 3);
   get(E); // expected-warning {{Argument does not satisfy secure_buffer constraints}}
 
-  int *F = malloc(sizeof(int) * x);
-  get(F);
+  int *F = malloc(sizeof(int) * w);
+  get(F); // expected-warning {{Argument may not satisfy secure_buffer constraints}}
 
-  int *G = malloc(sizeof(int) * y);
-  get(G); // expected-warning {{Argument does not satisfy secure_buffer constraints}}
+  int *G = malloc(sizeof(int) * x);
+  get(G);
 
-  int *H = malloc(sizeof(int) * x);
-  get(H); // expected-warning {{Argument may not satisfy secure_buffer constraints}}
+  int *H = malloc(sizeof(int) * y);
+  get(H); // expected-warning {{Argument does not satisfy secure_buffer constraints}}
 
-  int *I = A;
-  get(I);
+  int *I = malloc(sizeof(int) * z);
+  get(I); // expected-warning {{Argument may not satisfy secure_buffer constraints}}
 
-  int *J = B;
+  int *J = A;
   get(J);
 
-  int *K = C;
-  get(K); // expected-warning {{Argument does not satisfy secure_buffer constraints}}
+  int *K = B;
+  get(K);
+
+  int *L = C;
+  get(L); // expected-warning {{Argument does not satisfy secure_buffer constraints}}
 
   return 0;
 }
