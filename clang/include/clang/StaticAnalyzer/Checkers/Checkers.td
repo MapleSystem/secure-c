@@ -1054,4 +1054,9 @@ def SecureCTaintChecker : Checker<"SecureCTaint">,
   HelpText<"Check Secure-C's taint annotations">,
   Documentation<NotDocumented>;
 
+
+def SecureBufferChecker : Checker<"SecureBuffer">,
+  HelpText<"Check Secure-C's secure-buffer annotations">,
+  Documentation<NotDocumented>;
+
 } // end "secure-c"

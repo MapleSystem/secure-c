@@ -33,6 +33,18 @@ class ValueRangeChecker : public Checker<check::PreCall> {
   void reportWarning(CheckerContext &C, const Expr *Arg) const;
   void reportError(CheckerContext &C, const Expr *Arg) const;
 
+  SVal createSValForExpr(SValBuilder &SVB, CheckerContext &C,
+                         std::map<const Decl *, SVal> &ParamToArg,
+                         const Expr *E) const;
+
+  enum ValueRangeResult { VRUndefined, VRInRange, VROutOfRange };
+
+  ValueRangeResult isInValueRange(SValBuilder &SVB, CheckerContext &C,
+                                  std::map<const Decl *, SVal> &ParamToArg,
+                                  const Expr *TargetExpr, SVal Target,
+                                  const Expr *MinExpr,
+                                  const Expr *MaxExpr) const;
+
 public:
   ValueRangeChecker();
 
@@ -69,9 +81,9 @@ void ValueRangeChecker::reportError(CheckerContext &C, const Expr *Arg) const {
   }
 }
 
-SVal createSValForExpr(SValBuilder &SVB, CheckerContext &C,
-                       std::map<const Decl *, SVal> &ParamToArg,
-                       const Expr *E) {
+SVal ValueRangeChecker::createSValForExpr(
+    SValBuilder &SVB, CheckerContext &C,
+    std::map<const Decl *, SVal> &ParamToArg, const Expr *E) const {
   if (const IntegerLiteral *IL = dyn_cast<IntegerLiteral>(E)) {
     return SVB.makeIntVal(IL);
   } else if (const DeclRefExpr *DRE = dyn_cast<DeclRefExpr>(E)) {
@@ -89,12 +101,10 @@ SVal createSValForExpr(SValBuilder &SVB, CheckerContext &C,
   return UndefinedVal();
 }
 
-enum ValueRangeResult { VRUndefined, VRInRange, VROutOfRange };
-
-ValueRangeResult isInValueRange(SValBuilder &SVB, CheckerContext &C,
-                                std::map<const Decl *, SVal> &ParamToArg,
-                                const Expr *TargetExpr, SVal Target,
-                                const Expr *MinExpr, const Expr *MaxExpr) {
+ValueRangeChecker::ValueRangeResult ValueRangeChecker::isInValueRange(
+    SValBuilder &SVB, CheckerContext &C,
+    std::map<const Decl *, SVal> &ParamToArg, const Expr *TargetExpr,
+    SVal Target, const Expr *MinExpr, const Expr *MaxExpr) const {
   QualType Ty = TargetExpr->getType();
 
   SVal Min = createSValForExpr(SVB, C, ParamToArg, MinExpr);
