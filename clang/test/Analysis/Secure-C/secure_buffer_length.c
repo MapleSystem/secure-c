@@ -1,4 +1,4 @@
-// RUN:  clang -fsyntax-only -Xclang -analyze -Xclang -analyzer-checker=secure-c.SecureBuffer -Xclang -verify %s
+// RUN: clang -fsyntax-only -Xclang -analyze -Xclang -analyzer-checker=unix.DynamicMemoryModeling -Xclang -analyzer-checker=secure-c.SecureBuffer -Xclang -verify %s
 #include<stdlib.h>
 
 int get(int *_Nonnull buf) __attribute__((secure_buffer(buf, 10))) {
