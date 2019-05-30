@@ -1,4 +1,4 @@
-// RUN: clang -fsyntax-only -Xclang -analyze -Xclang -analyzer-checker=secure-c.SecureBuffer -Xclang -verify %s
+// RUN: clang -fsyntax-only -Xclang -analyze -Xclang -analyzer-config -Xclang ipa=none -Xclang -analyzer-checker=unix.DynamicMemoryModeling -Xclang -analyzer-checker=secure-c.SecureBuffer -Xclang -verify %s
 int simple_safe() {
   int a[10] = {0,1,2,3,4,5,6,7,8,9};
   return a[4];
