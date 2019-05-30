@@ -312,6 +312,9 @@ void ExprEngine::applyFunctionPreconditions(ProgramStateRef &State,
     if (ValueRangeAttr *VRA = PVD->getAttr<ValueRangeAttr>()) {
       applyValueRangePrecondition(State, InitLoc, ParamValue, VRA);
     }
+    if (SecureBufferAttr *SBA = PVD->getAttr<SecureBufferAttr>()) {
+      applySecureBufferPrecondition(State, InitLoc, ParamValue, SBA);
+    }
   }
 }
 
@@ -335,6 +338,40 @@ void ExprEngine::applyValueRangePrecondition(ProgramStateRef &State,
   llvm::APSInt HiBound = MaxExprResult.Val.getInt();
 
   State = State->assumeInclusiveRange(ParamValue, LoBound, HiBound, true);
+}
+
+void ExprEngine::applySecureBufferPrecondition(ProgramStateRef &State,
+                                               const LocationContext *InitLoc,
+                                               DefinedOrUnknownSVal ParamValue,
+                                               const SecureBufferAttr *SBA) {
+  // Get an SVal for the length specified in the annotation
+  Expr *Length = SBA->getLength();
+  SVal LengthVal = State->getSVal(Length, InitLoc);
+  assert(LengthVal.isValid());
+
+  const SymbolicRegion *R =
+      dyn_cast_or_null<SymbolicRegion>(ParamValue.getAsRegion());
+  assert(R);
+  DefinedOrUnknownSVal Extent = R->getExtent(svalBuilder);
+
+  // Get the size val in bytes
+  const Type *PtrTy = dyn_cast_or_null<PointerType>(
+      R->getSymbol()->getType().getCanonicalType().getTypePtr());
+  assert(PtrTy);
+
+  QualType ElementType = PtrTy->getPointeeType();
+  assert(!ElementType->isIncompleteType());
+
+  CharUnits TypeSize = getContext().getTypeSizeInChars(ElementType);
+  SVal Size =
+      svalBuilder.evalBinOp(State, BO_Mul, LengthVal,
+                            svalBuilder.makeArrayIndex(TypeSize.getQuantity()),
+                            svalBuilder.getArrayIndexType());
+
+  DefinedOrUnknownSVal extentMatchesSize =
+      svalBuilder.evalEQ(State, Extent, Size.castAs<DefinedSVal>());
+  State = State->assume(extentMatchesSize, true);
+  assert(State);
 }
 
 ProgramStateRef ExprEngine::createTemporaryRegionIfNeeded(
