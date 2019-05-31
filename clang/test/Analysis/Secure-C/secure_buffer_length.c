@@ -1,4 +1,7 @@
-// RUN: clang -fsyntax-only -Xclang -analyze -Xclang -analyzer-config -Xclang ipa=none -Xclang -analyzer-checker=unix.DynamicMemoryModeling -Xclang -analyzer-checker=secure-c.SecureBuffer -Xclang -verify %s
+// RUN: clang -fsyntax-only -Xclang -analyze \
+// RUN:   -Xclang -analyzer-config -Xclang ipa=none \
+// RUN:   -Xclang -analyzer-checker=unix.DynamicMemoryModeling \
+// RUN:   -Xclang -analyzer-checker=secure-c.SecureBuffer -Xclang -verify %s
 #include<stdlib.h>
 
 int get(int *_Nonnull buf) __attribute__((secure_buffer(buf, 10)));
@@ -74,4 +77,15 @@ int bar() {
   f(s.info); // expected-warning {{Buffer argument does not satisfy secure_buffer constraint}}
   f(s.tag); // expected-warning {{Buffer argument does not satisfy secure_buffer constraint}}
   return 0;
+}
+
+void baz(int *buf1, int *buf2, int *buf3, int *buf4,
+         unsigned int length3, unsigned int length4)
+    __attribute__((secure_buffer(buf1, 10), secure_buffer(buf2, 9),
+                   secure_buffer(buf3, length3), value_range(length3, 10, 20),
+                   secure_buffer(buf4, length4), value_range(length4, 0, 9))) {
+  get(buf1);
+  get(buf2); // expected-warning {{Buffer argument does not satisfy secure_buffer constraint}}
+  get(buf3);
+  get(buf4); // expected-warning {{Buffer argument does not satisfy secure_buffer constraint}}
 }

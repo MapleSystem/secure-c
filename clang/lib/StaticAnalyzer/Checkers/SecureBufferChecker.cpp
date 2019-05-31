@@ -24,7 +24,9 @@ using namespace clang;
 using namespace ento;
 
 namespace {
-class SecureBufferChecker : public Checker<check::PreCall, check::Location> {
+class SecureBufferChecker
+    : public Checker<check::PreCall, check::Location, check::BeginFunction,
+                     check::LiveSymbols, check::DeadSymbols> {
   mutable std::unique_ptr<BugType> BT;
 
   enum SB_Kind {
@@ -37,6 +39,10 @@ class SecureBufferChecker : public Checker<check::PreCall, check::Location> {
 
   void reportBug(CheckerContext &C, SB_Kind Kind, const Stmt *S) const;
 
+  SVal getLengthForRegion(CheckerContext &C, ProgramStateRef &state,
+                          const Expr *E, const MemRegion *MR) const;
+  SVal getLengthForParam(CheckerContext &C, ProgramStateRef &state,
+                         const Expr *DRE, const ParmVarDecl *PVD) const;
   SVal createSValForExpr(SValBuilder &SVB, CheckerContext &C,
                          std::map<const Decl *, SVal> &ParamToArg,
                          const Expr *E) const;
@@ -44,10 +50,19 @@ class SecureBufferChecker : public Checker<check::PreCall, check::Location> {
                                        SVal Val) const;
 
 public:
+  static void *getTag() {
+    static int tag;
+    return &tag;
+  }
+
   // Process arguments at call-sites
   void checkPreCall(const CallEvent &Call, CheckerContext &C) const;
   void checkLocation(SVal location, bool isLoad, const Stmt *S,
                      CheckerContext &C) const;
+  void checkBeginFunction(CheckerContext &C) const;
+
+  void checkLiveSymbols(ProgramStateRef state, SymbolReaper &SR) const;
+  void checkDeadSymbols(SymbolReaper &SR, CheckerContext &C) const;
 };
 
 // Used to compute the base and offset of a memory location
@@ -73,6 +88,8 @@ public:
 };
 
 } // end anonymous namespace
+
+REGISTER_MAP_WITH_PROGRAMSTATE(SecureBufferLength, const MemRegion *, SVal)
 
 // Report an error detected by the secure-buffer checker.
 void SecureBufferChecker::reportBug(CheckerContext &C, SB_Kind Kind,
@@ -295,6 +312,148 @@ LocationInfo LocationInfo::computeOffset(ProgramStateRef State,
   }
 
   return LocationInfo();
+}
+
+static DefinedOrUnknownSVal getValueForExpr(ProgramStateRef state,
+                                            SValBuilder &SVB, const Expr *E,
+                                            const LocationContext *Loc) {
+  if (const IntegerLiteral *IL = dyn_cast<IntegerLiteral>(E)) {
+    return SVB.makeIntVal(IL);
+  } else if (const DeclRefExpr *DRE = dyn_cast<DeclRefExpr>(E)) {
+    if (const ParmVarDecl *PVD =
+            dyn_cast_or_null<ParmVarDecl>(DRE->getDecl())) {
+      const MemRegion *Param = state->getRegion(PVD, Loc);
+      return state->getSVal(Param, PVD->getType())
+          .castAs<DefinedOrUnknownSVal>();
+    }
+    return UnknownVal();
+  } else if (const BinaryOperator *BO = dyn_cast<BinaryOperator>(E)) {
+    return SVB
+        .evalBinOp(state, BO->getOpcode(),
+                   getValueForExpr(state, SVB, BO->getLHS(), Loc),
+                   getValueForExpr(state, SVB, BO->getRHS(), Loc),
+                   BO->getType())
+        .castAs<DefinedOrUnknownSVal>();
+  } else if (const CastExpr *CE = dyn_cast<CastExpr>(E)) {
+    return SVB
+        .evalCast(getValueForExpr(state, SVB, CE->getSubExpr(), Loc),
+                  CE->getType(), CE->getSubExpr()->getType())
+        .castAs<DefinedOrUnknownSVal>();
+  }
+
+  return UnknownVal();
+}
+
+SVal SecureBufferChecker::getLengthForRegion(CheckerContext &C,
+                                             ProgramStateRef &state,
+                                             const Expr *E,
+                                             const MemRegion *MR) const {
+  // If we already have a length recorded for this buffer, use it
+  const SVal *Recorded = state->get<SecureBufferLength>(MR);
+  if (Recorded)
+    return *Recorded;
+
+  // Else, create a new symbol and add it to the state
+  SValBuilder &SVB = C.getSValBuilder();
+  QualType SizeTy = SVB.getContext().getSizeType();
+  SVal Length = SVB.getMetadataSymbolVal(
+      getTag(), MR, E, SizeTy, C.getLocationContext(), C.blockCount());
+
+  if (const SubRegion *SR = dyn_cast<SubRegion>(MR)) {
+    DefinedOrUnknownSVal extentEqualsMetadata =
+        SVB.evalEQ(state, SR->getExtent(SVB), Length)
+            .castAs<DefinedOrUnknownSVal>();
+    state = state->assume(extentEqualsMetadata, true);
+  }
+
+  state = state->set<SecureBufferLength>(MR, Length);
+  return Length;
+}
+
+SVal SecureBufferChecker::getLengthForParam(CheckerContext &C,
+                                            ProgramStateRef &state,
+                                            const Expr *DRE,
+                                            const ParmVarDecl *PVD) const {
+  const LocationContext *LCtx = C.getLocationContext();
+
+  const MemRegion *MR = state->getRegion(PVD, LCtx);
+  SVal MRSVal = state->getSVal(MR);
+  MR = MRSVal.getAsRegion();
+  if (!MR) {
+    return UndefinedVal();
+  }
+  return getLengthForRegion(C, state, DRE, MR);
+}
+
+void SecureBufferChecker::checkBeginFunction(CheckerContext &C) const {
+  ProgramStateRef state = C.getState();
+  SValBuilder &SVB = C.getSValBuilder();
+  const auto *LCtx = C.getLocationContext();
+  const auto *FD = dyn_cast_or_null<FunctionDecl>(LCtx->getDecl());
+  if (!FD)
+    return;
+
+  // Attributes on function parameters
+  for (unsigned int i = 0; i < FD->getNumParams(); i++) {
+    const ParmVarDecl *PVD = FD->getParamDecl(i);
+
+    if (SecureBufferAttr *SBA = PVD->getAttr<SecureBufferAttr>()) {
+      SVal LengthVal = getLengthForParam(C, state, SBA->getBuffer(), PVD);
+      DefinedOrUnknownSVal SBLength =
+          getValueForExpr(state, SVB, SBA->getLength(), LCtx);
+      assert(!SBLength.isUnknown());
+      SVal SBLengthVal = SBLength;
+      const RangeSet *RS =
+          state->get<ConstraintRange>(SBLengthVal.getAsSymbol());
+      if (RS) {
+        state = state->set<ConstraintRange>(LengthVal.getAsSymbol(), *RS);
+      }
+
+      DefinedOrUnknownSVal extentMatchesSize =
+          SVB.evalEQ(state, LengthVal.castAs<DefinedSVal>(),
+                     SBLengthVal.castAs<DefinedSVal>());
+      state = state->assume(extentMatchesSize, true);
+    }
+  }
+
+  C.addTransition(state);
+}
+
+// Ensure that the length expressions are kept live
+void SecureBufferChecker::checkLiveSymbols(ProgramStateRef state,
+                                           SymbolReaper &SR) const {
+  // Mark all symbols in our secure-buffer length map as valid
+  SecureBufferLengthTy Entries = state->get<SecureBufferLength>();
+  for (SecureBufferLengthTy::iterator I = Entries.begin(), E = Entries.end();
+       I != E; ++I) {
+    SVal Len = I.getData();
+    for (SymExpr::symbol_iterator si = Len.symbol_begin(),
+                                  se = Len.symbol_end();
+         si != se; ++si) {
+      SR.markInUse(*si);
+    }
+  }
+}
+
+// When a memory region is no longer live, remove the length from our list
+void SecureBufferChecker::checkDeadSymbols(SymbolReaper &SR,
+                                           CheckerContext &C) const {
+  ProgramStateRef state = C.getState();
+  SecureBufferLengthTy Entries = state->get<SecureBufferLength>();
+  if (Entries.isEmpty())
+    return;
+
+  SecureBufferLengthTy::Factory &F = state->get_context<SecureBufferLength>();
+  for (SecureBufferLengthTy::iterator I = Entries.begin(), E = Entries.end();
+       I != E; ++I) {
+    const MemRegion *MR = I.getKey();
+    if (!SR.isLiveRegion(MR)) {
+      Entries = F.remove(Entries, I.getKey());
+    }
+  }
+
+  state = state->set<SecureBufferLength>(Entries);
+  C.addTransition(state);
 }
 
 void ento::registerSecureBufferChecker(CheckerManager &mgr) {

@@ -691,12 +691,6 @@ private:
                                    const LocationContext *InitLoc,
                                    DefinedOrUnknownSVal ParamValue,
                                    const ValueRangeAttr *VRA);
-  /// Applies a precondition given by a secure-buffer attribute, defining the
-  /// length of a pointed-to buffer.  Updates \p State.
-  void applySecureBufferPrecondition(ProgramStateRef &State,
-                                     const LocationContext *InitLoc,
-                                     DefinedOrUnknownSVal ParamValue,
-                                     const SecureBufferAttr *SBA);
   ProgramStateRef finishArgumentConstruction(ProgramStateRef State,
                                              const CallEvent &Call);
   void finishArgumentConstruction(ExplodedNodeSet &Dst, ExplodedNode *Pred,
