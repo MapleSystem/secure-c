@@ -5,6 +5,7 @@
 
 #include "clang/AST/AST.h"
 #include "clang/AST/RecursiveASTVisitor.h"
+#include "clang/SecureC/KnownSymbols.h"
 #include "clang/Tooling/Refactoring.h"
 #include "clang/Tooling/Tooling.h"
 
@@ -80,9 +81,6 @@ private:
 
   class FuncNullability {
   public:
-    // For functions with no parameters
-    FuncNullability(NullabilityKind RK) : ReturnKind(RK) {}
-
     // For functions with no return value
     FuncNullability(std::initializer_list<NullabilityKind> PKs) {
       for (NullabilityKind kind : PKs) {
@@ -92,7 +90,7 @@ private:
 
     // For functions with both return value and parameters
     FuncNullability(NullabilityKind RK,
-                    std::initializer_list<NullabilityKind> PKs)
+                    std::initializer_list<NullabilityKind> PKs = {})
         : ReturnKind(RK) {
       for (NullabilityKind kind : PKs) {
         ParamKinds.push_back(kind);
@@ -103,13 +101,7 @@ private:
     std::vector<NullabilityKind> ParamKinds;
   };
 
-  std::map<StringRef, FuncNullability> KnownFuncs;
-  std::map<StringRef, NullabilityKind> KnownDecls;
-
-  void initializeKnownSymbols();
-  void initializeKnownDecls();
-  void initializeKnownFuncs();
-  bool isKnownFunction(const FunctionDecl *FD);
+  KnownSymbols knownSymbols;
   bool isNonNullParam(const FunctionDecl *FD, int i);
   bool isKnownNonNull(const Expr *E);
 };

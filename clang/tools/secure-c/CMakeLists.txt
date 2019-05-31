@@ -16,6 +16,7 @@ target_link_libraries(secure-c
   clangFrontend
   clangLex
   clangRewrite
+  clangSecureC
   clangSerialization
   clangTooling
   clangToolingCore

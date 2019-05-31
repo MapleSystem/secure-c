@@ -82,8 +82,6 @@ SecureCVisitor::SecureCVisitor(
 
   if (Statistics)
     Stats = new SecureCStatistics(this);
-
-  initializeKnownSymbols();
 }
 
 bool SecureCVisitor::shouldTraversePostOrder() { return true; }
@@ -136,7 +134,7 @@ bool SecureCVisitor::TraverseFunctionDecl(FunctionDecl *FD) {
     llvm::errs() << FD->getName() << " has a value range!!!\n";
   }
 
-  if (isKnownFunction(FD))
+  if (knownSymbols.isKnownFunction(FD))
     return true;
 
   for (unsigned int i = 0; i < FD->getNumParams(); i++) {
@@ -436,12 +434,8 @@ bool SecureCVisitor::VisitCallExpr(CallExpr *CE) {
         }
       }
     }
-  } else {
-    const FunctionProtoType *FTy =
-        dyn_cast<FunctionProtoType>(Callee->getType().getTypePtr());
-    if (FTy == nullptr)
-      return true;
-
+  } else if (const FunctionProtoType *FTy =
+                 dyn_cast<FunctionProtoType>(Callee->getType().getTypePtr())) {
     for (unsigned int i = 0; i < FTy->getNumParams(); i++) {
       const QualType QT = FTy->getParamType(i);
       if (isAnnotatedNonnull(QT)) {
@@ -455,7 +449,8 @@ bool SecureCVisitor::VisitCallExpr(CallExpr *CE) {
         }
       }
     }
-  }
+  } else
+    return true;
 
   for (auto *SB : CE->getCalleeDecl()->specific_attrs<SecureBufferAttr>()) {
     Expr *Buffer = SB->getBuffer();
@@ -681,336 +676,12 @@ bool SecureCVisitor::isDeterminedNonNull(const Expr *E) {
   return false;
 }
 
-void SecureCVisitor::initializeKnownSymbols() {
-  initializeKnownDecls();
-  initializeKnownFuncs();
-}
-
-void SecureCVisitor::initializeKnownDecls() {
-  KnownDecls.insert(std::pair<StringRef, NullabilityKind>(
-      StringRef("stdin"), NullabilityKind::NonNull));
-  KnownDecls.insert(std::pair<StringRef, NullabilityKind>(
-      StringRef("stdout"), NullabilityKind::NonNull));
-  KnownDecls.insert(std::pair<StringRef, NullabilityKind>(
-      StringRef("stderr"), NullabilityKind::NonNull));
-}
-
-void SecureCVisitor::initializeKnownFuncs() {
-  // TODO: Could we use table-gen for this?
-  // void *_Nullable malloc(size_t size);
-  KnownFuncs.insert(std::pair<StringRef, FuncNullability>(
-      StringRef("malloc"), FuncNullability(NullabilityKind::Nullable,
-                                           {NullabilityKind::Unspecified})));
-  // void free(void *_Nonnull ptr);
-  KnownFuncs.insert(std::pair<StringRef, FuncNullability>(
-      StringRef("free"), FuncNullability({NullabilityKind::NonNull})));
-  // void *_Nullable calloc(size_t nmemb, size_t size);
-  KnownFuncs.insert(std::pair<StringRef, FuncNullability>(
-      StringRef("calloc"), FuncNullability(NullabilityKind::Nullable,
-                                           {NullabilityKind::Unspecified,
-                                            NullabilityKind::Unspecified})));
-  // void *_Nullable realloc(void *_Nullable ptr, size_t size);
-  KnownFuncs.insert(std::pair<StringRef, FuncNullability>(
-      StringRef("realloc"), FuncNullability(NullabilityKind::Nullable,
-                                            {NullabilityKind::Nullable,
-                                             NullabilityKind::Unspecified})));
-  // void *_Nullable reallocarray(void *_Nonnull ptr, size_t nmemb,
-  //                              size_t size);
-  KnownFuncs.insert(std::pair<StringRef, FuncNullability>(
-      StringRef("reallocarray"),
-      FuncNullability(NullabilityKind::Nullable,
-                      {NullabilityKind::NonNull, NullabilityKind::Unspecified,
-                       NullabilityKind::Unspecified})));
-
-  // int printf(const char *_Nonnull format, ...);
-  KnownFuncs.insert(std::pair<StringRef, FuncNullability>(
-      StringRef("printf"), FuncNullability(NullabilityKind::Unspecified,
-                                           {NullabilityKind::NonNull})));
-  // int fprintf(FILE *_Nonnull stream, const char *_Nonnull format, ...);
-  KnownFuncs.insert(std::pair<StringRef, FuncNullability>(
-      StringRef("fprintf"),
-      FuncNullability(NullabilityKind::Unspecified,
-                      {NullabilityKind::NonNull, NullabilityKind::NonNull})));
-  // int dprintf(int fd, const char *_Nonnull format, ...);
-  KnownFuncs.insert(std::pair<StringRef, FuncNullability>(
-      StringRef("dprintf"), FuncNullability(NullabilityKind::Unspecified,
-                                            {NullabilityKind::Unspecified,
-                                             NullabilityKind::NonNull})));
-  // int sprintf(char *_Nonnull str, const char *_Nonnull format, ...);
-  KnownFuncs.insert(std::pair<StringRef, FuncNullability>(
-      StringRef("sprintf"),
-      FuncNullability(NullabilityKind::Unspecified,
-                      {NullabilityKind::NonNull, NullabilityKind::NonNull})));
-  // int snprintf(char *_Nonnull str, size_t size,
-  //              const char *_Nonnull format, ...);
-  KnownFuncs.insert(std::pair<StringRef, FuncNullability>(
-      StringRef("snprintf"),
-      FuncNullability(NullabilityKind::Unspecified,
-                      {NullabilityKind::NonNull, NullabilityKind::Unspecified,
-                       NullabilityKind::NonNull})));
-  // int vprintf(const char *_Nonnull format, va_list ap);
-  KnownFuncs.insert(std::pair<StringRef, FuncNullability>(
-      StringRef("vprintf"), FuncNullability(NullabilityKind::Unspecified,
-                                            {NullabilityKind::NonNull,
-                                             NullabilityKind::Unspecified})));
-  // int vfprintf(FILE *_Nonnull stream, const char *_Nonnull format,
-  //              va_list ap);
-  KnownFuncs.insert(std::pair<StringRef, FuncNullability>(
-      StringRef("vfprintf"),
-      FuncNullability(NullabilityKind::Unspecified,
-                      {NullabilityKind::NonNull, NullabilityKind::NonNull,
-                       NullabilityKind::Unspecified})));
-  // int vdprintf(int fd, const char *_Nonnull format, va_list ap);
-  KnownFuncs.insert(std::pair<StringRef, FuncNullability>(
-      StringRef("vdprintf"),
-      FuncNullability(NullabilityKind::Unspecified,
-                      {NullabilityKind::Unspecified, NullabilityKind::NonNull,
-                       NullabilityKind::Unspecified})));
-  // int vsprintf(char *_Nonnull str, const char *_Nonnull format,
-  //              va_list ap);
-  KnownFuncs.insert(std::pair<StringRef, FuncNullability>(
-      StringRef("vsprintf"),
-      FuncNullability(NullabilityKind::Unspecified,
-                      {NullabilityKind::NonNull, NullabilityKind::NonNull,
-                       NullabilityKind::Unspecified})));
-  // int vsnprintf(char *_Nonnull str, size_t size,
-  //               const char *_Nonnull format, va_list ap);
-  KnownFuncs.insert(std::pair<StringRef, FuncNullability>(
-      StringRef("vsnprintf"),
-      FuncNullability(NullabilityKind::Unspecified,
-                      {NullabilityKind::NonNull, NullabilityKind::Unspecified,
-                       NullabilityKind::NonNull,
-                       NullabilityKind::Unspecified})));
-
-  // int open(const char *_Nonnull pathname, int flags, ...);
-  KnownFuncs.insert(std::pair<StringRef, FuncNullability>(
-      StringRef("open"), FuncNullability(NullabilityKind::Unspecified,
-                                         {NullabilityKind::NonNull,
-                                          NullabilityKind::Unspecified})));
-  // int creat(const char *_Nonnull pathname, mode_t mode);
-  KnownFuncs.insert(std::pair<StringRef, FuncNullability>(
-      StringRef("creat"), FuncNullability(NullabilityKind::Unspecified,
-                                          {NullabilityKind::NonNull,
-                                           NullabilityKind::Unspecified})));
-  // int openat(int dirfd, const char *_Nonnull pathname, int flags, ...);
-  KnownFuncs.insert(std::pair<StringRef, FuncNullability>(
-      StringRef("openat"),
-      FuncNullability(NullabilityKind::Unspecified,
-                      {NullabilityKind::Unspecified, NullabilityKind::NonNull,
-                       NullabilityKind::Unspecified})));
-  // int stat(const char *_Nonnull pathname, struct stat *_Nonnull statbuf);
-  KnownFuncs.insert(std::pair<StringRef, FuncNullability>(
-      StringRef("stat"),
-      FuncNullability(NullabilityKind::Unspecified,
-                      {NullabilityKind::NonNull, NullabilityKind::NonNull})));
-  // int fstat(int fd, struct stat *_Nonnull statbuf);
-  KnownFuncs.insert(std::pair<StringRef, FuncNullability>(
-      StringRef("fstat"), FuncNullability(NullabilityKind::Unspecified,
-                                          {NullabilityKind::Unspecified,
-                                           NullabilityKind::NonNull})));
-  // int lstat(const char *_Nonnull pathname, struct stat *_Nonnull statbuf);
-  KnownFuncs.insert(std::pair<StringRef, FuncNullability>(
-      StringRef("lstat"),
-      FuncNullability(NullabilityKind::Unspecified,
-                      {NullabilityKind::NonNull, NullabilityKind::NonNull})));
-  // ssize_t read(int fd, void *_Nullable buf, size_t count);
-  KnownFuncs.insert(std::pair<StringRef, FuncNullability>(
-      StringRef("read"),
-      FuncNullability(NullabilityKind::Unspecified,
-                      {NullabilityKind::Unspecified, NullabilityKind::Nullable,
-                       NullabilityKind::Unspecified})));
-  // ssize_t write(int fd, const void *_Nullable buf, size_t count);
-  KnownFuncs.insert(std::pair<StringRef, FuncNullability>(
-      StringRef("write"),
-      FuncNullability(NullabilityKind::Unspecified,
-                      {NullabilityKind::Unspecified, NullabilityKind::Nullable,
-                       NullabilityKind::Unspecified})));
-  // FILE *_Nullable fopen(const char *_Nonnull pathname,
-  //                       const char *_Nonnull mode);
-  KnownFuncs.insert(std::pair<StringRef, FuncNullability>(
-      StringRef("fopen"),
-      FuncNullability(NullabilityKind::Nullable,
-                      {NullabilityKind::NonNull, NullabilityKind::NonNull})));
-  // FILE *_Nullable fdopen(int fd, const char *_Nonnull mode);
-  KnownFuncs.insert(std::pair<StringRef, FuncNullability>(
-      StringRef("fdopen"),
-      FuncNullability(NullabilityKind::Nullable, {NullabilityKind::Unspecified,
-                                                  NullabilityKind::NonNull})));
-  // FILE *_Nullable freopen(const char *_Nonnull pathname,
-  //                         const char *_Nonnull mode,
-  //                         FILE *_Nonnull stream);
-  KnownFuncs.insert(std::pair<StringRef, FuncNullability>(
-      StringRef("freopen"),
-      FuncNullability(NullabilityKind::Nullable,
-                      {NullabilityKind::NonNull, NullabilityKind::NonNull,
-                       NullabilityKind::NonNull})));
-  // int fclose(FILE *_Nonnull stream);
-  KnownFuncs.insert(std::pair<StringRef, FuncNullability>(
-      StringRef("fclose"), FuncNullability(NullabilityKind::Unspecified,
-                                           {NullabilityKind::NonNull})));
-  // size_t fread(void *_Nonnull ptr, size_t size, size_t nmemb,
-  //              FILE *_Nonnull stream);
-  KnownFuncs.insert(std::pair<StringRef, FuncNullability>(
-      StringRef("fread"),
-      FuncNullability(NullabilityKind::Unspecified,
-                      {NullabilityKind::NonNull, NullabilityKind::Unspecified,
-                       NullabilityKind::Unspecified,
-                       NullabilityKind::NonNull})));
-  // size_t fwrite(const void *_Nonnull ptr, size_t size, size_t nmemb,
-  //               FILE *_Nonnull stream);
-  KnownFuncs.insert(std::pair<StringRef, FuncNullability>(
-      StringRef("fwrite"),
-      FuncNullability(NullabilityKind::Unspecified,
-                      {NullabilityKind::NonNull, NullabilityKind::Unspecified,
-                       NullabilityKind::Unspecified,
-                       NullabilityKind::NonNull})));
-  // int fflush(FILE *_Nonnull stream);
-  KnownFuncs.insert(std::pair<StringRef, FuncNullability>(
-      StringRef("fflush"), FuncNullability(NullabilityKind::Unspecified,
-                                           {NullabilityKind::NonNull})));
-
-  // int fgetc(FILE *_Nonnull stream);
-  KnownFuncs.insert(std::pair<StringRef, FuncNullability>(
-      StringRef("fgetc"), FuncNullability(NullabilityKind::Unspecified,
-                                          {NullabilityKind::NonNull})));
-  // char *_Nullable fgets(char *_Nonnull s, int size, FILE *_Nonnull stream);
-  KnownFuncs.insert(std::pair<StringRef, FuncNullability>(
-      StringRef("fgets"),
-      FuncNullability(NullabilityKind::Nullable,
-                      {NullabilityKind::NonNull, NullabilityKind::Unspecified,
-                       NullabilityKind::NonNull})));
-  // int getc(FILE *_Nonnull stream);
-  KnownFuncs.insert(std::pair<StringRef, FuncNullability>(
-      StringRef("getc"), FuncNullability(NullabilityKind::Unspecified,
-                                         {NullabilityKind::NonNull})));
-  // int getchar(void);
-  KnownFuncs.insert(std::pair<StringRef, FuncNullability>(
-      StringRef("getchar"), FuncNullability(NullabilityKind::Unspecified)));
-  // int ungetc(int c, FILE *_Nonnull stream);
-  KnownFuncs.insert(std::pair<StringRef, FuncNullability>(
-      StringRef("ungetc"), FuncNullability(NullabilityKind::Unspecified,
-                                           {NullabilityKind::Unspecified,
-                                            NullabilityKind::NonNull})));
-
-  // void clearerr(FILE *_Nonnull stream);
-  KnownFuncs.insert(std::pair<StringRef, FuncNullability>(
-      StringRef("clearerr"), FuncNullability({NullabilityKind::NonNull})));
-  // int feof(FILE *_Nonnull stream);
-  KnownFuncs.insert(std::pair<StringRef, FuncNullability>(
-      StringRef("feof"), FuncNullability(NullabilityKind::Unspecified,
-                                         {NullabilityKind::NonNull})));
-  // int ferror(FILE *_Nonnull stream);
-  KnownFuncs.insert(std::pair<StringRef, FuncNullability>(
-      StringRef("ferror"), FuncNullability(NullabilityKind::Unspecified,
-                                           {NullabilityKind::NonNull})));
-  // int fileno(FILE *_Nonnull stream);
-  KnownFuncs.insert(std::pair<StringRef, FuncNullability>(
-      StringRef("fileno"), FuncNullability(NullabilityKind::Unspecified,
-                                           {NullabilityKind::NonNull})));
-
-  // char *_Nonnull strcat(char *_Nonnull dest, const char *_Nonnull src);
-  KnownFuncs.insert(std::pair<StringRef, FuncNullability>(
-      StringRef("strcat"),
-      FuncNullability(NullabilityKind::NonNull,
-                      {NullabilityKind::NonNull, NullabilityKind::NonNull})));
-  // char *_Nonnull strncat(char *_Nonnull dest, const char *_Nonnull src,
-  //                        size_t n);
-  KnownFuncs.insert(std::pair<StringRef, FuncNullability>(
-      StringRef("strncat"),
-      FuncNullability(NullabilityKind::NonNull,
-                      {NullabilityKind::NonNull, NullabilityKind::NonNull,
-                       NullabilityKind::Unspecified})));
-  // size_t strlen(const char *_Nonnull s);
-  KnownFuncs.insert(std::pair<StringRef, FuncNullability>(
-      StringRef("strlen"), FuncNullability(NullabilityKind::Unspecified,
-                                           {NullabilityKind::NonNull})));
-  // int strcmp(const char *_Nonnull s1, const char *_Nonnull s2);
-  KnownFuncs.insert(std::pair<StringRef, FuncNullability>(
-      StringRef("strcmp"),
-      FuncNullability(NullabilityKind::Unspecified,
-                      {NullabilityKind::NonNull, NullabilityKind::NonNull})));
-  // int strncmp(const char *_Nonnull s1, const char *_Nonnull s2, size_t n);
-  KnownFuncs.insert(std::pair<StringRef, FuncNullability>(
-      StringRef("strncmp"),
-      FuncNullability(NullabilityKind::Unspecified,
-                      {NullabilityKind::NonNull, NullabilityKind::NonNull,
-                       NullabilityKind::Unspecified})));
-  // char *_Nonnull strcpy(char *_Nonnull dest, const char *_Nonnull src);
-  KnownFuncs.insert(std::pair<StringRef, FuncNullability>(
-      StringRef("strcpy"),
-      FuncNullability(NullabilityKind::NonNull,
-                      {NullabilityKind::NonNull, NullabilityKind::NonNull})));
-  // char *_Nonnull strncpy(char *_Nonnull dest, const char *_Nonnull src,
-  //                        size_t n);
-  KnownFuncs.insert(std::pair<StringRef, FuncNullability>(
-      StringRef("strncpy"),
-      FuncNullability(NullabilityKind::NonNull,
-                      {NullabilityKind::NonNull, NullabilityKind::NonNull,
-                       NullabilityKind::Unspecified})));
-
-  // FIXME: This current technique cannot handle pointers to pointers!
-  // const unsigned short int *_Nonnull *_Nonnull __ctype_b_loc(void);
-  KnownFuncs.insert(std::pair<StringRef, FuncNullability>(
-      StringRef("__ctype_b_loc"), FuncNullability(NullabilityKind::NonNull)));
-  // const __int32_t *_Nonnull *_Nonnull __ctype_tolower_loc(void);
-  KnownFuncs.insert(std::pair<StringRef, FuncNullability>(
-      StringRef("__ctype_tolower_loc"),
-      FuncNullability(NullabilityKind::NonNull)));
-  // const __int32_t *_Nonnull *_Nonnull __ctype_toupper_loc(void);
-  KnownFuncs.insert(std::pair<StringRef, FuncNullability>(
-      StringRef("__ctype_toupper_loc"),
-      FuncNullability(NullabilityKind::NonNull)));
-
-  // int *_Nonnull __errno_location(void);
-  KnownFuncs.insert(std::pair<StringRef, FuncNullability>(
-      StringRef("__errno_location"),
-      FuncNullability(NullabilityKind::NonNull)));
-
-  // int utime(const char *_Nonnull filename,
-  //           const struct utimbuf *_Nullable times);
-  KnownFuncs.insert(std::pair<StringRef, FuncNullability>(
-      StringRef("utime"),
-      FuncNullability(NullabilityKind::Unspecified,
-                      {NullabilityKind::NonNull, NullabilityKind::Nullable})));
-  // int utimes(const char *_Nonnull filename, const struct timeval times[2]);
-  KnownFuncs.insert(std::pair<StringRef, FuncNullability>(
-      StringRef("utimes"), FuncNullability(NullabilityKind::Unspecified,
-                                           {NullabilityKind::NonNull,
-                                            NullabilityKind::Unspecified})));
-
-  // char *_Nullable getenv(const char *_Nonnull name);
-  KnownFuncs.insert(std::pair<StringRef, FuncNullability>(
-      StringRef("getenv"),
-      FuncNullability(NullabilityKind::Nullable, {NullabilityKind::NonNull})));
-}
-
-bool SecureCVisitor::isKnownFunction(const FunctionDecl *FD) {
-  return KnownFuncs.find(FD->getName()) != KnownFuncs.end();
-}
-
 bool SecureCVisitor::isNonNullParam(const FunctionDecl *FD, int i) {
-  if (isKnownFunction(FD))
-    return KnownFuncs.find(FD->getName())->second.ParamKinds[i] ==
-           NullabilityKind::NonNull;
+  if (knownSymbols.isKnownFunction(FD))
+    return knownSymbols.isNonNullParam(FD, i);
 
   const ParmVarDecl *Param = FD->getParamDecl(i);
   return isAnnotatedNonnull(Param->getType());
-}
-
-bool SecureCVisitor::isKnownNonNull(const Expr *E) {
-  if (const DeclRefExpr *DRE = dyn_cast<DeclRefExpr>(E)) {
-    if (const VarDecl *VD = dyn_cast<VarDecl>(DRE->getDecl())) {
-      auto iter = KnownDecls.find(VD->getName());
-      if (iter != KnownDecls.end()) {
-        if (iter->second == NullabilityKind::NonNull)
-          return true;
-        else
-          return false;
-      }
-    }
-  }
-
-  return false;
 }
 
 void SecureCVisitor::reportStatistics(bool DebugMode) {
@@ -1427,7 +1098,7 @@ bool SecureCVisitor::isNonnullCompatible(Expr const *E) {
     return true;
 
   // Is the expr referring to a known non-null decl?
-  if (isKnownNonNull(Stripped))
+  if (knownSymbols.isKnownNonNull(Stripped))
     return true;
 
   // Has the expr been determined to be non-null?
