@@ -258,11 +258,12 @@ bool SecureCVisitor::IsNullChecker(Expr *E, DeclRefExpr *&RetDRE,
     if (UO->getOpcode() != UO_LNot)
       isNull = false;
     // Check if it is a pointer
-    bool isPtr = DRE->getType()->isPointerType();
-    if (!isPtr)
+    DeclRefExpr *DRE =
+        dyn_cast<DeclRefExpr>(UO->getSubExpr()->IgnoreParenImpCasts());
+    if (!DRE || !DRE->getType()->isPointerType())
       return false;
     isNull = true;
-    RetDRE = dyn_cast<DeclRefExpr>(UO->getSubExpr()->IgnoreParenImpCasts());
+    RetDRE = DRE;
     return true;
   }
   // Process 3) and 4)
