@@ -66,6 +66,7 @@ SecureBufferChecker::SecureBufferChecker() {
       new BugType(this, "Breaks constraints", "Secure-C Secure Buffer"));
 }
 
+// Report an error when an argument might not satisfy the constraints.
 void SecureBufferChecker::reportConstraintWarning(CheckerContext &C,
                                                   const Stmt *S) const {
   if (const ExplodedNode *N = C.generateNonFatalErrorNode()) {
@@ -77,6 +78,7 @@ void SecureBufferChecker::reportConstraintWarning(CheckerContext &C,
   }
 }
 
+// Report an error when an argument does not satisfy the constraints.
 void SecureBufferChecker::reportConstraintError(CheckerContext &C,
                                                 const Stmt *S) const {
   if (const ExplodedNode *N = C.generateNonFatalErrorNode()) {
@@ -88,6 +90,7 @@ void SecureBufferChecker::reportConstraintError(CheckerContext &C,
   }
 }
 
+// Report an error when an access might be out of bounds.
 void SecureBufferChecker::reportAccessWarning(CheckerContext &C,
                                               const Stmt *S) const {
   if (const ExplodedNode *N = C.generateNonFatalErrorNode()) {
@@ -98,6 +101,7 @@ void SecureBufferChecker::reportAccessWarning(CheckerContext &C,
   }
 }
 
+// Report an error when an access is out of bounds.
 void SecureBufferChecker::reportAccessError(CheckerContext &C,
                                             const Stmt *S) const {
   if (const ExplodedNode *N = C.generateNonFatalErrorNode()) {
@@ -108,6 +112,7 @@ void SecureBufferChecker::reportAccessError(CheckerContext &C,
   }
 }
 
+// Report an error when a buffer of unknown size is accessed.
 void SecureBufferChecker::reportUnknownLength(CheckerContext &C,
                                               const Stmt *S) const {
   if (const ExplodedNode *N = C.generateNonFatalErrorNode()) {
@@ -118,6 +123,9 @@ void SecureBufferChecker::reportUnknownLength(CheckerContext &C,
   }
 }
 
+// Given an expression in terms of the function parameters, create an SVal
+// for it, replacing references to the parameters with the corresponding
+// argument expressions.
 SVal SecureBufferChecker::createSValForExpr(
     SValBuilder &SVB, CheckerContext &C,
     std::map<const Decl *, SVal> &ParamToArg, const Expr *E) const {
@@ -144,6 +152,7 @@ SVal SecureBufferChecker::createSValForExpr(
   return UndefinedVal();
 }
 
+// Attempt to get the length of the buffer, Val, in number of elements.
 DefinedOrUnknownSVal SecureBufferChecker::getBufferLength(CheckerContext &C,
                                                           SValBuilder &SVB,
                                                           SVal Val) const {
@@ -227,6 +236,8 @@ void SecureBufferChecker::checkPreCall(const CallEvent &Call,
   }
 }
 
+// Upon accessing a memory location, check if it is within the secure-buffer
+// boundaries.
 void SecureBufferChecker::checkLocation(SVal location, bool isLoad,
                                         const Stmt *S,
                                         CheckerContext &C) const {
