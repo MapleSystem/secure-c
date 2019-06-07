@@ -21,3 +21,11 @@ char testSafe(int flag) {
     x = 5;
   return get(arr, 8, x);
 }
+
+char testUnsafe(int flag) {
+  int arr[8] = {0, 1, 2, 3, 4, 5, 6, 7};
+  int x = 0;
+  if (flag)
+    x = 8;
+  return get(arr, 8, x); // expected-warning {{Argument may not satisfy value_range constraints}}
+}

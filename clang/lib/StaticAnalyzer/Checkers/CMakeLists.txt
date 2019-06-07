@@ -83,6 +83,7 @@ add_clang_library(clangStaticAnalyzerCheckers
   RunLoopAutoreleaseLeakChecker.cpp
   SecureCTaintChecker.cpp
   SecureBufferChecker.cpp
+  SecureCCommon.cpp
   SimpleStreamChecker.cpp
   StackAddrEscapeChecker.cpp
   StdLibraryFunctionsChecker.cpp

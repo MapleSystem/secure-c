@@ -14,6 +14,7 @@
 #include "clang/ASTMatchers/ASTMatchFinder.h"
 #include "clang/ASTMatchers/ASTMatchers.h"
 #include "clang/StaticAnalyzer/Checkers/BuiltinCheckerRegistration.h"
+#include "clang/StaticAnalyzer/Checkers/SecureCCommon.h"
 #include "clang/StaticAnalyzer/Core/BugReporter/BugType.h"
 #include "clang/StaticAnalyzer/Core/Checker.h"
 #include "clang/StaticAnalyzer/Core/PathSensitive/CallEvent.h"
@@ -33,16 +34,11 @@ class ValueRangeChecker : public Checker<check::PreCall, check::BeginFunction> {
   void reportWarning(CheckerContext &C, const Expr *Arg) const;
   void reportError(CheckerContext &C, const Expr *Arg) const;
 
-  SVal createSValForExpr(SValBuilder &SVB, CheckerContext &C,
-                         std::map<const Decl *, SVal> &ParamToArg,
-                         const Expr *E) const;
-
   enum ValueRangeResult { VRUndefined, VRInRange, VROutOfRange };
 
   ValueRangeResult isInValueRange(SValBuilder &SVB, CheckerContext &C,
-                                  std::map<const Decl *, SVal> &ParamToArg,
-                                  const Expr *TargetExpr, SVal Target,
-                                  const Expr *MinExpr,
+                                  const CallEvent &Call, const Expr *TargetExpr,
+                                  SVal Target, const Expr *MinExpr,
                                   const Expr *MaxExpr) const;
 
 public:
@@ -82,35 +78,16 @@ void ValueRangeChecker::reportError(CheckerContext &C, const Expr *Arg) const {
   }
 }
 
-SVal ValueRangeChecker::createSValForExpr(
-    SValBuilder &SVB, CheckerContext &C,
-    std::map<const Decl *, SVal> &ParamToArg, const Expr *E) const {
-  if (const IntegerLiteral *IL = dyn_cast<IntegerLiteral>(E)) {
-    return SVB.makeIntVal(IL);
-  } else if (const DeclRefExpr *DRE = dyn_cast<DeclRefExpr>(E)) {
-    return ParamToArg[DRE->getDecl()];
-  } else if (const BinaryOperator *BO = dyn_cast<BinaryOperator>(E)) {
-    return SVB.evalBinOp(C.getState(), BO->getOpcode(),
-                         createSValForExpr(SVB, C, ParamToArg, BO->getLHS()),
-                         createSValForExpr(SVB, C, ParamToArg, BO->getRHS()),
-                         BO->getType());
-  } else if (const CastExpr *CE = dyn_cast<CastExpr>(E)) {
-    return SVB.evalCast(createSValForExpr(SVB, C, ParamToArg, CE->getSubExpr()),
-                        CE->getType(), CE->getSubExpr()->getType());
-  }
-
-  return UndefinedVal();
-}
-
-ValueRangeChecker::ValueRangeResult ValueRangeChecker::isInValueRange(
-    SValBuilder &SVB, CheckerContext &C,
-    std::map<const Decl *, SVal> &ParamToArg, const Expr *TargetExpr,
-    SVal Target, const Expr *MinExpr, const Expr *MaxExpr) const {
+ValueRangeChecker::ValueRangeResult
+ValueRangeChecker::isInValueRange(SValBuilder &SVB, CheckerContext &C,
+                                  const CallEvent &Call, const Expr *TargetExpr,
+                                  SVal Target, const Expr *MinExpr,
+                                  const Expr *MaxExpr) const {
   QualType Ty = TargetExpr->getType();
 
-  SVal Min = createSValForExpr(SVB, C, ParamToArg, MinExpr);
+  SVal Min = createSValForParamExpr(SVB, C, Call, MinExpr);
   assert(!Min.isUnknownOrUndef());
-  SVal Max = createSValForExpr(SVB, C, ParamToArg, MaxExpr);
+  SVal Max = createSValForParamExpr(SVB, C, Call, MaxExpr);
   assert(!Max.isUnknownOrUndef());
 
   if (MinExpr->getType() != Ty)
@@ -158,11 +135,6 @@ void ValueRangeChecker::checkPreCall(const CallEvent &Call,
 
   SValBuilder &SVB = C.getSValBuilder();
 
-  std::map<const Decl *, SVal> ParamToArg;
-  for (unsigned int i = 0; i < FD->getNumParams(); i++) {
-    ParamToArg[FD->getParamDecl(i)] = Call.getArgSVal(i);
-  }
-
   for (unsigned int i = 0; i < FD->getNumParams(); i++) {
     const ParmVarDecl *PVD = FD->getParamDecl(i);
 
@@ -171,8 +143,8 @@ void ValueRangeChecker::checkPreCall(const CallEvent &Call,
       const Expr *MaxExpr = VRA->getMax();
 
       ValueRangeResult Result =
-          isInValueRange(SVB, C, ParamToArg, Call.getArgExpr(i),
-                         Call.getArgSVal(i), MinExpr, MaxExpr);
+          isInValueRange(SVB, C, Call, Call.getArgExpr(i), Call.getArgSVal(i),
+                         MinExpr, MaxExpr);
 
       if (Result == VROutOfRange) {
         reportError(C, Call.getArgExpr(i));
