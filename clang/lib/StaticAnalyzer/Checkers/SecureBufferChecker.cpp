@@ -25,17 +25,17 @@ using namespace ento;
 
 namespace {
 class SecureBufferChecker : public Checker<check::PreCall, check::Location> {
-  std::unique_ptr<BugType> PossiblyBreaksConstraints;
-  std::unique_ptr<BugType> BreaksConstraints;
-  std::unique_ptr<BugType> PossiblyOutOfBounds;
-  std::unique_ptr<BugType> OutOfBounds;
-  std::unique_ptr<BugType> UnknownLength;
+  mutable std::unique_ptr<BugType> BT;
 
-  void reportConstraintWarning(CheckerContext &C, const Stmt *S) const;
-  void reportConstraintError(CheckerContext &C, const Stmt *S) const;
-  void reportAccessWarning(CheckerContext &C, const Stmt *S) const;
-  void reportAccessError(CheckerContext &C, const Stmt *S) const;
-  void reportUnknownLength(CheckerContext &C, const Stmt *S) const;
+  enum SB_Kind {
+    AccessIsOutOfBounds,
+    AccessMayOutOfBounds,
+    BreaksConstraint,
+    MayBreakConstraint,
+    UnknownLength
+  };
+
+  void reportBug(CheckerContext &C, SB_Kind Kind, const Stmt *S) const;
 
   SVal createSValForExpr(SValBuilder &SVB, CheckerContext &C,
                          std::map<const Decl *, SVal> &ParamToArg,
@@ -44,8 +44,6 @@ class SecureBufferChecker : public Checker<check::PreCall, check::Location> {
                                        SVal Val) const;
 
 public:
-  SecureBufferChecker();
-
   // Process arguments at call-sites
   void checkPreCall(const CallEvent &Call, CheckerContext &C) const;
   void checkLocation(SVal location, bool isLoad, const Stmt *S,
@@ -54,73 +52,40 @@ public:
 
 } // end anonymous namespace
 
-SecureBufferChecker::SecureBufferChecker() {
-  // Initialize the bug types.
-  PossiblyOutOfBounds.reset(
-      new BugType(this, "Possibly out of range", "Secure-C Secure Buffer"));
-  OutOfBounds.reset(
-      new BugType(this, "Out of range", "Secure-C Secure Buffer"));
-  PossiblyBreaksConstraints.reset(new BugType(
-      this, "Possibly breaks constraints", "Secure-C Secure Buffer"));
-  BreaksConstraints.reset(
-      new BugType(this, "Breaks constraints", "Secure-C Secure Buffer"));
-}
+// Report an error detected by the secure-buffer checker.
+void SecureBufferChecker::reportBug(CheckerContext &C, SB_Kind Kind,
+                                    const Stmt *S) const {
+  const ExplodedNode *N = C.generateNonFatalErrorNode();
+  if (!N)
+    return;
 
-// Report an error when an argument might not satisfy the constraints.
-void SecureBufferChecker::reportConstraintWarning(CheckerContext &C,
-                                                  const Stmt *S) const {
-  if (const ExplodedNode *N = C.generateNonFatalErrorNode()) {
-    auto report = llvm::make_unique<BugReport>(
-        *PossiblyBreaksConstraints,
-        "Argument may not satisfy secure_buffer constraints", N);
-    report->addRange(S->getSourceRange());
-    C.emitReport(std::move(report));
-  }
-}
+  if (!BT)
+    BT.reset(new BugType(this, "Secure Buffer", "Secure-C"));
 
-// Report an error when an argument does not satisfy the constraints.
-void SecureBufferChecker::reportConstraintError(CheckerContext &C,
-                                                const Stmt *S) const {
-  if (const ExplodedNode *N = C.generateNonFatalErrorNode()) {
-    auto report = llvm::make_unique<BugReport>(
-        *BreaksConstraints,
-        "Argument does not satisfy secure_buffer constraints", N);
-    report->addRange(S->getSourceRange());
-    C.emitReport(std::move(report));
+  SmallString<256> buf;
+  llvm::raw_svector_ostream os(buf);
+  os << "Buffer ";
+  switch (Kind) {
+  case AccessIsOutOfBounds:
+    os << "access is out of bounds";
+    break;
+  case AccessMayOutOfBounds:
+    os << "access may be out of bounds";
+    break;
+  case BreaksConstraint:
+    os << "argument does not satisfy secure_buffer constraint";
+    break;
+  case MayBreakConstraint:
+    os << "argument may not satisfy secure_buffer constraint";
+    break;
+  case UnknownLength:
+    os << "has unknown length";
+    break;
   }
-}
 
-// Report an error when an access might be out of bounds.
-void SecureBufferChecker::reportAccessWarning(CheckerContext &C,
-                                              const Stmt *S) const {
-  if (const ExplodedNode *N = C.generateNonFatalErrorNode()) {
-    auto report = llvm::make_unique<BugReport>(
-        *PossiblyOutOfBounds, "Access may be out of bounds", N);
-    report->addRange(S->getSourceRange());
-    C.emitReport(std::move(report));
-  }
-}
-
-// Report an error when an access is out of bounds.
-void SecureBufferChecker::reportAccessError(CheckerContext &C,
-                                            const Stmt *S) const {
-  if (const ExplodedNode *N = C.generateNonFatalErrorNode()) {
-    auto report = llvm::make_unique<BugReport>(*OutOfBounds,
-                                               "Access is out of bounds", N);
-    report->addRange(S->getSourceRange());
-    C.emitReport(std::move(report));
-  }
-}
-
-// Report an error when a buffer of unknown size is accessed.
-void SecureBufferChecker::reportUnknownLength(CheckerContext &C,
-                                              const Stmt *S) const {
-  if (const ExplodedNode *N = C.generateNonFatalErrorNode()) {
-    auto report = llvm::make_unique<BugReport>(
-        *UnknownLength, "Unsafe access of pointer to unknown buffer size", N);
-    report->addRange(S->getSourceRange());
-    C.emitReport(std::move(report));
-  }
+  auto report = llvm::make_unique<BugReport>(*BT, os.str(), N);
+  report->addRange(S->getSourceRange());
+  C.emitReport(std::move(report));
 }
 
 // Given an expression in terms of the function parameters, create an SVal
@@ -211,7 +176,7 @@ void SecureBufferChecker::checkPreCall(const CallEvent &Call,
       SVal ArgVal = Call.getArgSVal(i);
       DefinedOrUnknownSVal Length = getBufferLength(C, SVB, ArgVal);
       if (Length.isUnknown()) {
-        reportConstraintWarning(C, Call.getArgExpr(i));
+        reportBug(C, MayBreakConstraint, Call.getArgExpr(i));
         continue;
       }
 
@@ -228,9 +193,9 @@ void SecureBufferChecker::checkPreCall(const CallEvent &Call,
           state->assume(InRange.castAs<DefinedOrUnknownSVal>());
 
       if (StOutBound && !StInBound) {
-        reportConstraintError(C, Call.getArgExpr(i));
+        reportBug(C, BreaksConstraint, Call.getArgExpr(i));
       } else if ((bool)StInBound == (bool)StOutBound) {
-        reportConstraintWarning(C, Call.getArgExpr(i));
+        reportBug(C, MayBreakConstraint, Call.getArgExpr(i));
       }
     }
   }
@@ -252,7 +217,7 @@ void SecureBufferChecker::checkLocation(SVal location, bool isLoad,
 
   DefinedOrUnknownSVal Length = getBufferLength(C, SVB, location);
   if (Length.isUnknown()) {
-    reportUnknownLength(C, S);
+    reportBug(C, UnknownLength, S);
     return;
   }
 
@@ -262,9 +227,9 @@ void SecureBufferChecker::checkLocation(SVal location, bool isLoad,
       state->assumeInBound(ER->getIndex(), Length, false);
 
   if (StOutBound && !StInBound) {
-    reportAccessError(C, S);
+    reportBug(C, AccessIsOutOfBounds, S);
   } else if ((bool)StInBound == (bool)StOutBound) {
-    reportAccessWarning(C, S);
+    reportBug(C, AccessMayOutOfBounds, S);
   }
 }
 
