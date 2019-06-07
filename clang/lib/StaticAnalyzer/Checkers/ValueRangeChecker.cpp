@@ -23,7 +23,7 @@ using namespace clang;
 using namespace ento;
 
 namespace {
-class ValueRangeChecker : public Checker<check::PreCall> {
+class ValueRangeChecker : public Checker<check::PreCall, check::BeginFunction> {
   std::unique_ptr<BugType> PossiblyOutOfRange;
   std::unique_ptr<BugType> OutOfRange;
 
@@ -50,6 +50,7 @@ public:
 
   // Process arguments at call-sites
   void checkPreCall(const CallEvent &Call, CheckerContext &C) const;
+  void checkBeginFunction(CheckerContext &C) const;
 };
 
 } // end anonymous namespace
@@ -180,6 +181,46 @@ void ValueRangeChecker::checkPreCall(const CallEvent &Call,
       }
     }
   }
+}
+
+void ValueRangeChecker::checkBeginFunction(CheckerContext &C) const {
+  ProgramStateRef state = C.getState();
+  ASTContext &Context = C.getASTContext();
+  const auto *LCtx = C.getLocationContext();
+  const auto *FD = dyn_cast_or_null<FunctionDecl>(LCtx->getDecl());
+  if (!FD)
+    return;
+
+  // Attributes on function parameters
+  for (unsigned int i = 0; i < FD->getNumParams(); i++) {
+    const ParmVarDecl *PVD = FD->getParamDecl(i);
+
+    if (ValueRangeAttr *VRA = PVD->getAttr<ValueRangeAttr>()) {
+      // Find parameter variable's symbolic value
+      Loc ParamLoc = state->getLValue(PVD, LCtx);
+      DefinedOrUnknownSVal ParamValue = state->getSVal(ParamLoc, PVD->getType())
+                                            .castAs<DefinedOrUnknownSVal>();
+
+      Expr *MinExpr = VRA->getMin();
+      Expr *MaxExpr = VRA->getMax();
+
+      Expr::EvalResult MinExprResult;
+      if (!MinExpr->EvaluateAsInt(MinExprResult, Context)) {
+        llvm_unreachable("Minimum value is not an integer constant");
+      }
+      llvm::APSInt LoBound = MinExprResult.Val.getInt();
+
+      Expr::EvalResult MaxExprResult;
+      if (!MaxExpr->EvaluateAsInt(MaxExprResult, Context)) {
+        llvm_unreachable("Maximum value is not an integer constant");
+      }
+      llvm::APSInt HiBound = MaxExprResult.Val.getInt();
+
+      state = state->assumeInclusiveRange(ParamValue, LoBound, HiBound, true);
+    }
+  }
+
+  C.addTransition(state);
 }
 
 void ento::registerValueRangeChecker(CheckerManager &mgr) {

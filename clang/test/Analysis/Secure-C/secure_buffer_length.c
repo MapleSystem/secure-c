@@ -1,6 +1,7 @@
 // RUN: clang -fsyntax-only -Xclang -analyze \
 // RUN:   -Xclang -analyzer-config -Xclang ipa=none \
 // RUN:   -Xclang -analyzer-checker=unix.DynamicMemoryModeling \
+// RUN:   -Xclang -analyzer-checker=secure-c.ValueRange \
 // RUN:   -Xclang -analyzer-checker=secure-c.SecureBuffer -Xclang -verify %s
 #include<stdlib.h>
 
