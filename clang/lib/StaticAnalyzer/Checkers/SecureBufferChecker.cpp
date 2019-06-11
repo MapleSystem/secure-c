@@ -50,6 +50,28 @@ public:
                      CheckerContext &C) const;
 };
 
+// Used to compute the base and offset of a memory location
+class LocationInfo {
+private:
+  const SubRegion *BaseRegion;
+  SVal ByteOffset;
+
+  LocationInfo() : BaseRegion(nullptr), ByteOffset(UnknownVal()) {}
+
+public:
+  LocationInfo(const SubRegion *Base, SVal Offset)
+      : BaseRegion(Base), ByteOffset(Offset) {}
+
+  NonLoc getByteOffset() const { return ByteOffset.castAs<NonLoc>(); }
+  const SubRegion *getRegion() const { return BaseRegion; }
+
+  static LocationInfo computeOffset(ProgramStateRef State, SValBuilder &SVB,
+                                    SVal Location);
+
+  void dump() const;
+  void dumpToStream(raw_ostream &OS) const;
+};
+
 } // end anonymous namespace
 
 // Report an error detected by the secure-buffer checker.
@@ -117,36 +139,35 @@ SVal SecureBufferChecker::createSValForExpr(
   return UndefinedVal();
 }
 
-// Attempt to get the length of the buffer, Val, in number of elements.
+// Attempt to get the length of the buffer, Val, in number of bytes.
 DefinedOrUnknownSVal SecureBufferChecker::getBufferLength(CheckerContext &C,
                                                           SValBuilder &SVB,
                                                           SVal Val) const {
-  const MemRegion *R = Val.getAsRegion();
-  if (!R) {
-    return UnknownVal();
-  }
+  ProgramStateRef State = C.getState();
 
-  if (R->getKind() != MemRegion::ElementRegionKind) {
-    return UnknownVal();
-  }
-  const ElementRegion *ER = cast<ElementRegion>(R);
-  QualType ElementType = ER->getElementType();
-  // If the element is an incomplete type, go no further.
-  if (ElementType->isIncompleteType())
+  const LocationInfo &LocInfo = LocationInfo::computeOffset(State, SVB, Val);
+
+  const SubRegion *SR = LocInfo.getRegion();
+  if (!SR)
     return UnknownVal();
 
-  const SubRegion *SR = dyn_cast_or_null<SubRegion>(R->getBaseRegion());
-  if (!SR) {
-    return UnknownVal();
-  }
-  DefinedOrUnknownSVal Extent = SR->getExtent(SVB);
+  SVal Extent = SR->getExtent(SVB);
 
-  ASTContext &AstContext = C.getASTContext();
-  CharUnits TypeSize = AstContext.getTypeSizeInChars(ElementType);
-  SVal NumElements = SVB.evalBinOp(C.getState(), BO_Div, Extent,
-                                   SVB.makeArrayIndex(TypeSize.getQuantity()),
-                                   SVB.getArrayIndexType());
-  return NumElements.castAs<DefinedOrUnknownSVal>();
+  NonLoc byteOffset = LocInfo.getByteOffset();
+
+  Extent =
+      SVB.evalBinOp(State, BO_Sub, Extent, byteOffset, SVB.getArrayIndexType());
+
+  return Extent.castAs<DefinedOrUnknownSVal>();
+}
+
+static SVal elementCountToByteCount(CheckerContext &C, SVal Elements,
+                                    QualType ElemType) {
+  SValBuilder &SVB = C.getSValBuilder();
+  CharUnits TypeSize = C.getASTContext().getTypeSizeInChars(ElemType);
+  return SVB.evalBinOp(C.getState(), BO_Mul, Elements,
+                       SVB.makeArrayIndex(TypeSize.getQuantity()),
+                       SVB.getArrayIndexType());
 }
 
 // On function calls, check if the pointer passed to a parameter with a
@@ -173,6 +194,8 @@ void SecureBufferChecker::checkPreCall(const CallEvent &Call,
     const ParmVarDecl *PVD = FD->getParamDecl(i);
 
     if (SecureBufferAttr *SBA = PVD->getAttr<SecureBufferAttr>()) {
+      // Param is known to be a pointer type already, so this is safe
+      QualType elemType = PVD->getType()->getPointeeType();
       SVal ArgVal = Call.getArgSVal(i);
       DefinedOrUnknownSVal Length = getBufferLength(C, SVB, ArgVal);
       if (Length.isUnknown()) {
@@ -181,10 +204,8 @@ void SecureBufferChecker::checkPreCall(const CallEvent &Call,
       }
 
       const Expr *ReqLengthExpr = SBA->getLength();
-      DefinedOrUnknownSVal ReqLength =
-          createSValForExpr(SVB, C, ParamToArg, ReqLengthExpr)
-              .castAs<DefinedOrUnknownSVal>();
-
+      SVal ReqLengthElem = createSValForExpr(SVB, C, ParamToArg, ReqLengthExpr);
+      SVal ReqLength = elementCountToByteCount(C, ReqLengthElem, elemType);
       SVal InRange = SVB.evalBinOp(state, BO_GE, Length, ReqLength,
                                    SVB.getArrayIndexType());
 
@@ -203,34 +224,77 @@ void SecureBufferChecker::checkPreCall(const CallEvent &Call,
 
 // Upon accessing a memory location, check if it is within the secure-buffer
 // boundaries.
-void SecureBufferChecker::checkLocation(SVal location, bool isLoad,
+void SecureBufferChecker::checkLocation(SVal Location, bool IsLoad,
                                         const Stmt *S,
                                         CheckerContext &C) const {
   SValBuilder &SVB = C.getSValBuilder();
   ProgramStateRef state = C.getState();
 
-  const MemRegion *Region = location.getAsRegion();
-  const ElementRegion *ER = dyn_cast_or_null<ElementRegion>(Region);
-  if (!ER) {
-    return;
-  }
-
-  DefinedOrUnknownSVal Length = getBufferLength(C, SVB, location);
-  if (Length.isUnknown()) {
+  const LocationInfo &rawOffset =
+      LocationInfo::computeOffset(state, SVB, Location);
+  const SubRegion *SR = rawOffset.getRegion();
+  if (!SR) {
     reportBug(C, UnknownLength, S);
     return;
   }
 
-  ProgramStateRef StInBound =
-      state->assumeInBound(ER->getIndex(), Length, true);
-  ProgramStateRef StOutBound =
-      state->assumeInBound(ER->getIndex(), Length, false);
+  DefinedOrUnknownSVal Length = SR->getExtent(SVB);
+  DefinedOrUnknownSVal Offset = rawOffset.getByteOffset();
+
+  ProgramStateRef StInBound = state->assumeInBound(Offset, Length, true);
+  ProgramStateRef StOutBound = state->assumeInBound(Offset, Length, false);
 
   if (StOutBound && !StInBound) {
     reportBug(C, AccessIsOutOfBounds, S);
   } else if ((bool)StInBound == (bool)StOutBound) {
     reportBug(C, AccessMayOutOfBounds, S);
   }
+}
+
+// Scale a base value by a scaling factor, and return the scaled
+// value as an SVal.  Used by 'computeOffset'.
+static inline SVal scaleValue(ProgramStateRef State, NonLoc BaseVal,
+                              CharUnits Scaling, SValBuilder &SVB) {
+  return SVB.evalBinOpNN(State, BO_Mul, BaseVal,
+                         SVB.makeArrayIndex(Scaling.getQuantity()),
+                         SVB.getArrayIndexType());
+}
+
+/// Compute a raw byte offset from a base region.  Used for array bounds
+/// checking.
+LocationInfo LocationInfo::computeOffset(ProgramStateRef State,
+                                         SValBuilder &SVB, SVal Location) {
+  const MemRegion *Region = Location.getAsRegion();
+  SVal Offset = SVB.makeArrayIndex(0);
+
+  if (Region->getKind() == MemRegion::ElementRegionKind) {
+    const ElementRegion *ElemReg = cast<ElementRegion>(Region);
+    SVal Index = ElemReg->getIndex();
+    if (!Index.getAs<NonLoc>())
+      return LocationInfo();
+
+    QualType ElemType = ElemReg->getElementType();
+
+    // If the element is an incomplete type, go no further.
+    if (ElemType->isIncompleteType())
+      return LocationInfo();
+
+    // Set the offset.
+    Offset = scaleValue(State, Index.castAs<NonLoc>(),
+                        SVB.getContext().getTypeSizeInChars(ElemType), SVB);
+
+    // If we cannot determine the offset, return an invalid object
+    if (Offset.isUnknownOrUndef())
+      return LocationInfo();
+
+    Region = ElemReg->getSuperRegion();
+  }
+
+  if (const SubRegion *SubReg = dyn_cast<SubRegion>(Region)) {
+    return LocationInfo(SubReg, Offset);
+  }
+
+  return LocationInfo();
 }
 
 void ento::registerSecureBufferChecker(CheckerManager &mgr) {
