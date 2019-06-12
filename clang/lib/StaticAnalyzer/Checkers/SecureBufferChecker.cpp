@@ -61,6 +61,8 @@ public:
 
   void checkLiveSymbols(ProgramStateRef state, SymbolReaper &SR) const;
   void checkDeadSymbols(SymbolReaper &SR, CheckerContext &C) const;
+
+  void dump(ProgramStateRef state) const;
 };
 
 // Used to compute the base and offset of a memory location
@@ -418,6 +420,21 @@ void SecureBufferChecker::checkDeadSymbols(SymbolReaper &SR,
 
   state = state->set<SecureBufferLength>(Entries);
   C.addTransition(state);
+}
+
+LLVM_DUMP_METHOD void SecureBufferChecker::dump(ProgramStateRef state) const {
+  llvm::errs() << "SecureBuffer Lengths:\n";
+  SecureBufferLengthTy Entries = state->get<SecureBufferLength>();
+  for (SecureBufferLengthTy::iterator I = Entries.begin(), E = Entries.end();
+       I != E; ++I) {
+    const MemRegion *MR = I.getKey();
+    SVal Len = I.getData();
+    llvm::errs() << "  ";
+    MR->dump();
+    llvm::errs() << ": ";
+    Len.dump();
+    llvm::errs() << "\n";
+  }
 }
 
 void ento::registerSecureBufferChecker(CheckerManager &mgr) {
