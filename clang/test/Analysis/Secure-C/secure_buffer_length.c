@@ -90,3 +90,18 @@ void baz(int *buf1, int *buf2, int *buf3, int *buf4,
   get(buf3);
   get(buf4); // expected-warning {{Buffer argument does not satisfy secure_buffer constraint}}
 }
+
+int param_length_binop(int * _Nonnull buf, unsigned int x)
+    __attribute__((secure_buffer(buf, x*2+1),
+                   value_range(x, 0, 100)));
+
+int param_length_cast(int * _Nonnull buf, int length)
+    __attribute__((secure_buffer(buf, (unsigned char) length)));
+
+void complex_length_test() {
+  int x[11];
+  param_length_binop(x, 5);
+  param_length_binop(x, 7); // expected-warning {{Buffer argument does not satisfy secure_buffer constraint}}
+  param_length_cast(x, 11);
+  param_length_cast(x, 12); // expected-warning {{Buffer argument does not satisfy secure_buffer constraint}}
+}

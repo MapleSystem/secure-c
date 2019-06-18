@@ -46,3 +46,14 @@ int out_of_range(int *_Nonnull buf, int idx)
                    value_range(idx, 10, 20))) {
   return buf[idx]; // expected-warning {{Buffer access is out of bounds}}
 }
+
+int param_length_binop(int * _Nonnull buf, unsigned int x)
+    __attribute__((secure_buffer(buf, x*2+1),
+                   value_range(x, 0, 100))) {
+  return buf[0];
+}
+
+int param_length_cast(int * _Nonnull buf, int length)
+    __attribute__((secure_buffer(buf, (unsigned char) length))) {
+  return buf[0];
+}
