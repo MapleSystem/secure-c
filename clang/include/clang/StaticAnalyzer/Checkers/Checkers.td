@@ -1054,9 +1054,12 @@ def SecureCTaintChecker : Checker<"SecureCTaint">,
   HelpText<"Check Secure-C's taint annotations">,
   Documentation<NotDocumented>;
 
-
 def SecureBufferChecker : Checker<"SecureBuffer">,
   HelpText<"Check Secure-C's secure-buffer annotations">,
+  Documentation<NotDocumented>;
+
+def SecureCNullabilityChecker : Checker<"Nullability">,
+  HelpText<"Check Secure-C's pointer nullability">,
   Documentation<NotDocumented>;
 
 } // end "secure-c"
