@@ -6360,9 +6360,52 @@ static void handleFortifyStdLib(Sema &S, Decl *D, const ParsedAttr &AL) {
                                    Flag, AL.getAttributeSpellingListIndex()));
 }
 
-static void handleValueRange(Sema &S, Decl *D, const ParsedAttr &AL) {
+static bool checkValueRange(Sema &S, Decl *D, const ParsedAttr &AL,
+                            Expr *Target, const Expr *Min, const Expr *Max) {
   const auto *FD = cast<FunctionDecl>(D);
 
+  if (!isa<DeclRefExpr>(Target)) {
+    S.Diag(Target->getExprLoc(), diag::err_attribute_argument_n_type)
+        << AL << 1 << AANT_ArgumentParamInteger;
+    return false;
+  }
+  auto *DRE = cast<DeclRefExpr>(Target);
+
+  if (!isa<ParmVarDecl>(DRE->getDecl())) {
+    S.Diag(Target->getExprLoc(), diag::err_attribute_argument_n_type)
+        << AL << 1 << AANT_ArgumentParamInteger;
+    return false;
+  }
+  auto *PVD = cast<ParmVarDecl>(DRE->getDecl());
+
+  if (PVD->getParentFunctionOrMethod() != FD) {
+    S.Diag(Target->getExprLoc(), diag::err_attribute_argument_n_type)
+        << AL << 1 << AANT_ArgumentParamInteger;
+    return false;
+  }
+
+  if (!PVD->getType()->isIntegerType()) {
+    S.Diag(Target->getExprLoc(), diag::err_attribute_argument_n_type)
+        << AL << 1 << AANT_ArgumentParamInteger;
+    return false;
+  }
+
+  if (!Min->getType()->isIntegerType()) {
+    S.Diag(Min->getExprLoc(), diag::err_attribute_argument_n_type)
+        << AL << 2 << AANT_ArgumentExprIntType;
+    return false;
+  }
+
+  if (!Max->getType()->isIntegerType()) {
+    S.Diag(Max->getExprLoc(), diag::err_attribute_argument_n_type)
+        << AL << 3 << AANT_ArgumentExprIntType;
+    return false;
+  }
+
+  return true;
+}
+
+static void handleValueRange(Sema &S, Decl *D, const ParsedAttr &AL) {
   if (!isFunctionOrMethod(D)) {
     S.Diag(D->getLocation(), diag::warn_attribute_wrong_decl_type)
         << AL << ExpectedFunctionOrMethod;
@@ -6373,54 +6416,59 @@ static void handleValueRange(Sema &S, Decl *D, const ParsedAttr &AL) {
   Expr *Min = AL.getArgAsExpr(1);
   Expr *Max = AL.getArgAsExpr(2);
 
-  if (!isa<DeclRefExpr>(Target)) {
-    S.Diag(Target->getExprLoc(), diag::err_attribute_argument_n_type)
-        << AL << 1 << AANT_ArgumentParamInteger;
+  if (!checkValueRange(S, D, AL, Target, Min, Max))
     return;
-  }
-  auto *DRE = cast<DeclRefExpr>(Target);
-
-  if (!isa<ParmVarDecl>(DRE->getDecl())) {
-    S.Diag(Target->getExprLoc(), diag::err_attribute_argument_n_type)
-        << AL << 1 << AANT_ArgumentParamInteger;
-    return;
-  }
-  auto *PVD = cast<ParmVarDecl>(DRE->getDecl());
-
-  if (PVD->getParentFunctionOrMethod() != FD) {
-    S.Diag(Target->getExprLoc(), diag::err_attribute_argument_n_type)
-        << AL << 1 << AANT_ArgumentParamInteger;
-    return;
-  }
-
-  if (!PVD->getType()->isIntegerType()) {
-    S.Diag(Target->getExprLoc(), diag::err_attribute_argument_n_type)
-        << AL << 1 << AANT_ArgumentParamInteger;
-    return;
-  }
-
-  if (!Min->getType()->isIntegerType()) {
-    S.Diag(Min->getExprLoc(), diag::err_attribute_argument_n_type)
-        << AL << 2 << AANT_ArgumentExprIntType;
-    return;
-  }
-
-  if (!Max->getType()->isIntegerType()) {
-    S.Diag(Max->getExprLoc(), diag::err_attribute_argument_n_type)
-        << AL << 3 << AANT_ArgumentExprIntType;
-    return;
-  }
 
   auto VRA =
       new (S.Context) ValueRangeAttr(AL.getRange(), S.Context, Target, Min, Max,
                                      AL.getAttributeSpellingListIndex());
   D->addAttr(VRA);
+
+  auto *DRE = cast<DeclRefExpr>(Target);
+  auto *PVD = cast<ParmVarDecl>(DRE->getDecl());
   PVD->addAttr(VRA);
 }
 
-static void handleSecureBuffer(Sema &S, Decl *D, const ParsedAttr &AL) {
+static bool checkSecureBuffer(Sema &S, Decl *D, const ParsedAttr &AL,
+                              Expr *Buffer, const Expr *Length) {
   const auto *FD = cast<FunctionDecl>(D);
 
+  if (!isa<DeclRefExpr>(Buffer)) {
+    S.Diag(Buffer->getExprLoc(), diag::err_attribute_argument_n_type)
+        << AL << 1 << AANT_ArgumentParamPointer;
+    return false;
+  }
+  auto *DRE = cast<DeclRefExpr>(Buffer);
+
+  if (!isa<ParmVarDecl>(DRE->getDecl())) {
+    S.Diag(Buffer->getExprLoc(), diag::err_attribute_argument_n_type)
+        << AL << 1 << AANT_ArgumentParamPointer;
+    return false;
+  }
+  auto *PVD = cast<ParmVarDecl>(DRE->getDecl());
+
+  if (PVD->getParentFunctionOrMethod() != FD) {
+    S.Diag(Buffer->getExprLoc(), diag::err_attribute_argument_n_type)
+        << AL << 1 << AANT_ArgumentParamPointer;
+    return false;
+  }
+
+  if (!PVD->getType()->isPointerType()) {
+    S.Diag(Buffer->getExprLoc(), diag::err_attribute_argument_n_type)
+        << AL << 1 << AANT_ArgumentParamPointer;
+    return false;
+  }
+
+  if (!Length->getType()->isIntegerType()) {
+    S.Diag(Length->getExprLoc(), diag::err_attribute_argument_n_type)
+        << AL << 2 << AANT_ArgumentExprIntType;
+    return false;
+  }
+
+  return true;
+}
+
+static void handleSecureBuffer(Sema &S, Decl *D, const ParsedAttr &AL) {
   if (!isFunctionOrMethod(D)) {
     S.Diag(D->getLocation(), diag::warn_attribute_wrong_decl_type)
         << AL << ExpectedFunctionOrMethod;
@@ -6430,57 +6478,24 @@ static void handleSecureBuffer(Sema &S, Decl *D, const ParsedAttr &AL) {
   Expr *Buffer = AL.getArgAsExpr(0);
   Expr *Length = AL.getArgAsExpr(1);
 
-  if (!isa<DeclRefExpr>(Buffer)) {
-    S.Diag(Buffer->getExprLoc(), diag::err_attribute_argument_n_type)
-        << AL << 1 << AANT_ArgumentParamPointer;
+  if (!checkSecureBuffer(S, D, AL, Buffer, Length))
     return;
-  }
-  auto *DRE = cast<DeclRefExpr>(Buffer);
-
-  if (!isa<ParmVarDecl>(DRE->getDecl())) {
-    S.Diag(Buffer->getExprLoc(), diag::err_attribute_argument_n_type)
-        << AL << 1 << AANT_ArgumentParamPointer;
-    return;
-  }
-  auto *PVD = cast<ParmVarDecl>(DRE->getDecl());
-
-  if (PVD->getParentFunctionOrMethod() != FD) {
-    S.Diag(Buffer->getExprLoc(), diag::err_attribute_argument_n_type)
-        << AL << 1 << AANT_ArgumentParamPointer;
-    return;
-  }
-
-  if (!PVD->getType()->isPointerType()) {
-    S.Diag(Buffer->getExprLoc(), diag::err_attribute_argument_n_type)
-        << AL << 1 << AANT_ArgumentParamPointer;
-    return;
-  }
-
-  if (!Length->getType()->isIntegerType()) {
-    S.Diag(Length->getExprLoc(), diag::err_attribute_argument_n_type)
-        << AL << 2 << AANT_ArgumentExprIntType;
-    return;
-  }
 
   auto SBA =
       new (S.Context) SecureBufferAttr(AL.getRange(), S.Context, Buffer, Length,
                                        AL.getAttributeSpellingListIndex());
   D->addAttr(SBA);
+
+  auto *DRE = cast<DeclRefExpr>(Buffer);
+  auto *PVD = cast<ParmVarDecl>(DRE->getDecl());
   PVD->addAttr(SBA);
 }
 
-static void handleSecureCIn(Sema &S, Decl *D, const ParsedAttr &AL) {
+static bool checkUntrustedIn(Sema &S, Decl *D, const ParsedAttr &AL) {
   const auto *FD = cast<FunctionDecl>(D);
-
-  if (!isFunctionOrMethod(D)) {
-    S.Diag(D->getLocation(), diag::warn_attribute_wrong_decl_type)
-        << AL << ExpectedFunctionOrMethod;
-    return;
-  }
-
   Expr *Target = AL.getArgAsExpr(0);
-
   DeclRefExpr *DRE;
+
   if (!isa<DeclRefExpr>(Target)) {
     if (const auto *UO = dyn_cast<UnaryOperator>(Target)) {
       if (UO->getOpcode() == UO_Deref) {
@@ -6488,12 +6503,12 @@ static void handleSecureCIn(Sema &S, Decl *D, const ParsedAttr &AL) {
       } else {
         S.Diag(Target->getExprLoc(), diag::err_attribute_argument_n_type)
             << AL << 1 << AANT_ArgumentParamPointer;
-        return;
+        return false;
       }
     } else {
       S.Diag(Target->getExprLoc(), diag::err_attribute_argument_n_type)
           << AL << 1 << AANT_ArgumentParamPointer;
-      return;
+      return false;
     }
   } else {
     DRE = cast<DeclRefExpr>(Target);
@@ -6502,36 +6517,24 @@ static void handleSecureCIn(Sema &S, Decl *D, const ParsedAttr &AL) {
   if (!isa<ParmVarDecl>(DRE->getDecl())) {
     S.Diag(Target->getExprLoc(), diag::err_attribute_argument_n_type)
         << AL << 1 << AANT_ArgumentParamPointer;
-    return;
+    return false;
   }
   auto *PVD = cast<ParmVarDecl>(DRE->getDecl());
 
   if (PVD->getParentFunctionOrMethod() != FD) {
     S.Diag(Target->getExprLoc(), diag::err_attribute_argument_n_type)
         << AL << 1 << AANT_ArgumentParamPointer;
-    return;
+    return false;
   }
 
-  SmallVector<Expr *, 1> Annotations;
-  checkAttrArgsAreCapabilityObjs(S, D, AL, Annotations, 1);
-
-  D->addAttr(new (S.Context) SecureCInAttr(
-      AL.getRange(), S.Context, Target, Annotations.data(), Annotations.size(),
-      AL.getAttributeSpellingListIndex()));
+  return true;
 }
 
-static void handleSecureCOut(Sema &S, Decl *D, const ParsedAttr &AL) {
+static bool checkUntrustedOut(Sema &S, Decl *D, const ParsedAttr &AL) {
   const auto *FD = cast<FunctionDecl>(D);
-
-  if (!isFunctionOrMethod(D)) {
-    S.Diag(D->getLocation(), diag::warn_attribute_wrong_decl_type)
-        << AL << ExpectedFunctionOrMethod;
-    return;
-  }
-
   Expr *Target = AL.getArgAsExpr(0);
-
   DeclRefExpr *DRE;
+
   if (!isa<DeclRefExpr>(Target)) {
     if (const auto *UO = dyn_cast<UnaryOperator>(Target)) {
       if (UO->getOpcode() == UO_Deref) {
@@ -6539,12 +6542,12 @@ static void handleSecureCOut(Sema &S, Decl *D, const ParsedAttr &AL) {
       } else {
         S.Diag(Target->getExprLoc(), diag::err_attribute_argument_n_type)
             << AL << 1 << AANT_ArgumentParamPointer;
-        return;
+        return false;
       }
     } else {
       S.Diag(Target->getExprLoc(), diag::err_attribute_argument_n_type)
           << AL << 1 << AANT_ArgumentParamPointer;
-      return;
+      return false;
     }
   } else {
     DRE = cast<DeclRefExpr>(Target);
@@ -6553,7 +6556,7 @@ static void handleSecureCOut(Sema &S, Decl *D, const ParsedAttr &AL) {
   if (!isa<ParmVarDecl>(DRE->getDecl()) && !isa<FunctionDecl>(DRE->getDecl())) {
     S.Diag(Target->getExprLoc(), diag::err_attribute_argument_n_type)
         << AL << 1 << AANT_ArgumentParamPointer;
-    return;
+    return false;
   }
 
   if (isa<ParmVarDecl>(DRE->getDecl())) {
@@ -6562,25 +6565,97 @@ static void handleSecureCOut(Sema &S, Decl *D, const ParsedAttr &AL) {
     if (PVD->getParentFunctionOrMethod() != FD) {
       S.Diag(Target->getExprLoc(), diag::err_attribute_argument_n_type)
           << AL << 1 << AANT_ArgumentParamPointer;
-      return;
+      return false;
     }
 
     if (!PVD->getType()->isPointerType()) {
       S.Diag(Target->getExprLoc(), diag::err_attribute_argument_n_type)
           << AL << 1 << AANT_ArgumentParamPointer;
-      return;
+      return false;
     }
   } else {
     auto *FDecl = cast<FunctionDecl>(DRE->getDecl());
     if (FDecl != FD) {
       S.Diag(Target->getExprLoc(), diag::err_attribute_argument_n_type)
           << AL << 1 << AANT_ArgumentParamPointer;
-      return;
+      return false;
     }
   }
 
+  return true;
+}
+
+static bool checkSecureCInOut(Sema &S, Decl *D, const ParsedAttr &AL,
+                              Expr *Target, SmallVector<Expr *, 1> Annotations,
+                              bool isIn) {
+  for (Expr **APtr = Annotations.begin(); APtr < Annotations.end(); APtr++) {
+    Expr *AExpr = *APtr;
+    if (const auto *CE = dyn_cast<CallExpr>(AExpr)) {
+      if (const FunctionDecl *FD = CE->getDirectCallee()) {
+        const IdentifierInfo *II = FD->getIdentifier();
+        if (!II)
+          return false;
+
+        if (II->getName().equals("value_range") && (CE->getNumArgs() == 2)) {
+          const Expr *Min = CE->getArg(0);
+          const Expr *Max = CE->getArg(1);
+          if (!checkValueRange(S, D, AL, Target, Min, Max))
+            return false;
+        } else if (II->getName().equals("secure_buffer") &&
+                   (CE->getNumArgs() == 1)) {
+          const Expr *Length = CE->getArg(0);
+          if (!checkSecureBuffer(S, D, AL, Target, Length))
+            return false;
+        } else {
+          return false;
+        }
+      }
+    } else if (isa<StringLiteral>(AExpr)) {
+      bool IsValid =
+          isIn ? checkUntrustedIn(S, D, AL) : checkUntrustedOut(S, D, AL);
+      if (!IsValid)
+        return false;
+    } else {
+      return false;
+    }
+  }
+  return true;
+}
+
+static void handleSecureCIn(Sema &S, Decl *D, const ParsedAttr &AL) {
+  if (!isFunctionOrMethod(D)) {
+    S.Diag(D->getLocation(), diag::warn_attribute_wrong_decl_type)
+        << AL << ExpectedFunctionOrMethod;
+    return;
+  }
+
+  bool isIn = true;
+  Expr *Target = AL.getArgAsExpr(0);
   SmallVector<Expr *, 1> Annotations;
   checkAttrArgsAreCapabilityObjs(S, D, AL, Annotations, 1);
+
+  if (!checkSecureCInOut(S, D, AL, Target, Annotations, isIn))
+    return;
+
+  D->addAttr(new (S.Context) SecureCInAttr(
+      AL.getRange(), S.Context, Target, Annotations.data(), Annotations.size(),
+      AL.getAttributeSpellingListIndex()));
+}
+
+static void handleSecureCOut(Sema &S, Decl *D, const ParsedAttr &AL) {
+  if (!isFunctionOrMethod(D)) {
+    S.Diag(D->getLocation(), diag::warn_attribute_wrong_decl_type)
+        << AL << ExpectedFunctionOrMethod;
+    return;
+  }
+
+  bool isIn = false;
+  Expr *Target = AL.getArgAsExpr(0);
+  SmallVector<Expr *, 1> Annotations;
+  checkAttrArgsAreCapabilityObjs(S, D, AL, Annotations, 1);
+
+  if (!checkSecureCInOut(S, D, AL, Target, Annotations, isIn))
+    return;
 
   D->addAttr(new (S.Context) SecureCOutAttr(
       AL.getRange(), S.Context, Target, Annotations.data(), Annotations.size(),
