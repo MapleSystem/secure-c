@@ -24,7 +24,8 @@ using namespace clang;
 using namespace ento;
 
 namespace {
-class ValueRangeChecker : public Checker<check::PreCall, check::BeginFunction> {
+class ValueRangeChecker
+    : public Checker<check::PreCall, check::PostCall, check::BeginFunction> {
   std::unique_ptr<BugType> PossiblyOutOfRange;
   std::unique_ptr<BugType> OutOfRange;
 
@@ -46,7 +47,13 @@ public:
 
   // Process arguments at call-sites
   void checkPreCall(const CallEvent &Call, CheckerContext &C) const;
+  void checkPostCall(const CallEvent &Call, CheckerContext &C) const;
   void checkBeginFunction(CheckerContext &C) const;
+
+private:
+  void checkValueRangeAttr(const CallEvent &Call, CheckerContext &C,
+                           const ParmVarDecl *PVD, const Expr *MinExpr,
+                           const Expr *MaxExpr, unsigned Idx) const;
 };
 
 } // end anonymous namespace
@@ -133,23 +140,63 @@ void ValueRangeChecker::checkPreCall(const CallEvent &Call,
   if (!FD)
     return;
 
-  SValBuilder &SVB = C.getSValBuilder();
-
   for (unsigned int i = 0; i < FD->getNumParams(); i++) {
     const ParmVarDecl *PVD = FD->getParamDecl(i);
 
     if (ValueRangeAttr *VRA = PVD->getAttr<ValueRangeAttr>()) {
-      const Expr *MinExpr = VRA->getMin();
-      const Expr *MaxExpr = VRA->getMax();
+      checkValueRangeAttr(Call, C, PVD, VRA->getMin(), VRA->getMax(), i);
+    }
+  }
 
-      ValueRangeResult Result =
-          isInValueRange(SVB, C, Call, Call.getArgExpr(i), Call.getArgSVal(i),
-                         MinExpr, MaxExpr);
+  // Process secure_c_in annotations, if any
+  for (auto *SCInA : FD->specific_attrs<SecureCInAttr>()) {
+    Expr *Target = SCInA->getTarget();
+    auto *DRE = cast<DeclRefExpr>(Target);
+    auto *PVD = cast<ParmVarDecl>(DRE->getDecl());
+    unsigned TI = PVD->getFunctionScopeIndex();
+    // Process annotations
+    for (Expr **APtr = SCInA->annotations_begin();
+         APtr < SCInA->annotations_end(); APtr++) {
+      Expr *AExpr = *APtr;
+      if (const auto *CE = dyn_cast<CallExpr>(AExpr)) {
+        if (const FunctionDecl *FD = CE->getDirectCallee()) {
+          const IdentifierInfo *II = FD->getIdentifier();
+          if (II && II->getName().equals("value_range")) {
+            checkValueRangeAttr(Call, C, PVD, CE->getArg(0), CE->getArg(1), TI);
+          }
+        }
+      }
+    }
+  }
+}
 
-      if (Result == VROutOfRange) {
-        reportError(C, Call.getArgExpr(i));
-      } else if (Result == VRUndefined) {
-        reportWarning(C, Call.getArgExpr(i));
+void ValueRangeChecker::checkPostCall(const CallEvent &Call,
+                                      CheckerContext &C) const {
+  const AnyFunctionCall *FC = dyn_cast<AnyFunctionCall>(&Call);
+  if (!FC)
+    return;
+
+  const FunctionDecl *FD = FC->getDecl();
+  if (!FD)
+    return;
+
+  // Process secure_c_out annotations, if any
+  for (auto *SCInA : FD->specific_attrs<SecureCOutAttr>()) {
+    Expr *Target = SCInA->getTarget();
+    auto *DRE = cast<DeclRefExpr>(Target);
+    auto *PVD = cast<ParmVarDecl>(DRE->getDecl());
+    unsigned TI = PVD->getFunctionScopeIndex();
+    // Process annotations
+    for (Expr **APtr = SCInA->annotations_begin();
+         APtr < SCInA->annotations_end(); APtr++) {
+      Expr *AExpr = *APtr;
+      if (const auto *CE = dyn_cast<CallExpr>(AExpr)) {
+        if (const FunctionDecl *FD = CE->getDirectCallee()) {
+          const IdentifierInfo *II = FD->getIdentifier();
+          if (II && II->getName().equals("value_range")) {
+            checkValueRangeAttr(Call, C, PVD, CE->getArg(0), CE->getArg(1), TI);
+          }
+        }
       }
     }
   }
@@ -202,4 +249,19 @@ void ento::registerValueRangeChecker(CheckerManager &mgr) {
 // This checker should be enabled regardless of how language options are set.
 bool ento::shouldRegisterValueRangeChecker(const LangOptions &LO) {
   return true;
+}
+
+void ValueRangeChecker::checkValueRangeAttr(
+    const CallEvent &Call, CheckerContext &C, const ParmVarDecl *PVD,
+    const Expr *MinExpr, const Expr *MaxExpr, unsigned Idx) const {
+  SValBuilder &SVB = C.getSValBuilder();
+  ValueRangeResult Result =
+      isInValueRange(SVB, C, Call, Call.getArgExpr(Idx), Call.getArgSVal(Idx),
+                     MinExpr, MaxExpr);
+
+  if (Result == VROutOfRange) {
+    reportError(C, Call.getArgExpr(Idx));
+  } else if (Result == VRUndefined) {
+    reportWarning(C, Call.getArgExpr(Idx));
+  }
 }

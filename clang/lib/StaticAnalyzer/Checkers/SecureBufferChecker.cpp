@@ -26,8 +26,9 @@ using namespace ento;
 
 namespace {
 class SecureBufferChecker
-    : public Checker<check::PreCall, check::Location, check::BeginFunction,
-                     check::LiveSymbols, check::DeadSymbols> {
+    : public Checker<check::PreCall, check::PostCall, check::Location,
+                     check::BeginFunction, check::LiveSymbols,
+                     check::DeadSymbols> {
   mutable std::unique_ptr<BugType> BT;
 
   enum SB_Kind {
@@ -51,6 +52,7 @@ public:
 
   // Process arguments at call-sites
   void checkPreCall(const CallEvent &Call, CheckerContext &C) const;
+  void checkPostCall(const CallEvent &Call, CheckerContext &C) const;
   void checkLocation(SVal location, bool isLoad, const Stmt *S,
                      CheckerContext &C) const;
   void checkBeginFunction(CheckerContext &C) const;
@@ -59,6 +61,11 @@ public:
   void checkDeadSymbols(SymbolReaper &SR, CheckerContext &C) const;
 
   void dump(ProgramStateRef state) const;
+
+private:
+  void checkSecureBufferAttr(const CallEvent &Call, CheckerContext &C,
+                             const ParmVarDecl *PVD, const Expr *LExpr,
+                             unsigned Idx) const;
 };
 
 } // end anonymous namespace
@@ -144,36 +151,63 @@ void SecureBufferChecker::checkPreCall(const CallEvent &Call,
   if (!FD)
     return;
 
-  SValBuilder &SVB = C.getSValBuilder();
-  ProgramStateRef state = C.getState();
-
   for (unsigned int i = 0; i < FD->getNumParams(); i++) {
     const ParmVarDecl *PVD = FD->getParamDecl(i);
 
     if (SecureBufferAttr *SBA = PVD->getAttr<SecureBufferAttr>()) {
-      // Param is known to be a pointer type already, so this is safe
-      QualType elemType = PVD->getType()->getPointeeType();
-      SVal ArgVal = Call.getArgSVal(i);
-      DefinedOrUnknownSVal Length = getBufferLength(C, SVB, ArgVal);
-      if (Length.isUnknown()) {
-        reportBug(C, MayBreakConstraint, Call.getArgExpr(i));
-        continue;
+      checkSecureBufferAttr(Call, C, PVD, SBA->getLength(), i);
+    }
+  }
+
+  // Process secure_c_in annotations, if any
+  for (auto *SCInA : FD->specific_attrs<SecureCInAttr>()) {
+    Expr *Target = SCInA->getTarget();
+    auto *DRE = cast<DeclRefExpr>(Target);
+    auto *PVD = cast<ParmVarDecl>(DRE->getDecl());
+    unsigned TI = PVD->getFunctionScopeIndex();
+    // Process annotations
+    for (Expr **APtr = SCInA->annotations_begin();
+         APtr < SCInA->annotations_end(); APtr++) {
+      Expr *AExpr = *APtr;
+      if (const auto *CE = dyn_cast<CallExpr>(AExpr)) {
+        if (const FunctionDecl *FD = CE->getDirectCallee()) {
+          const IdentifierInfo *II = FD->getIdentifier();
+          if (II && II->getName().equals("secure_buffer")) {
+            checkSecureBufferAttr(Call, C, PVD, CE->getArg(0), TI);
+          }
+        }
       }
+    }
+  }
+}
 
-      const Expr *ReqLengthExpr = SBA->getLength();
-      SVal ReqLengthElem = createSValForParamExpr(SVB, C, Call, ReqLengthExpr);
-      SVal ReqLength = elementCountToByteCount(C, ReqLengthElem, elemType);
-      SVal InRange = SVB.evalBinOp(state, BO_GE, Length, ReqLength,
-                                   SVB.getArrayIndexType());
+void SecureBufferChecker::checkPostCall(const CallEvent &Call,
+                                        CheckerContext &C) const {
+  const AnyFunctionCall *FC = dyn_cast<AnyFunctionCall>(&Call);
+  if (!FC)
+    return;
 
-      ProgramStateRef StInBound, StOutBound;
-      std::tie(StInBound, StOutBound) =
-          state->assume(InRange.castAs<DefinedOrUnknownSVal>());
+  const FunctionDecl *FD = FC->getDecl();
+  if (!FD)
+    return;
 
-      if (StOutBound && !StInBound) {
-        reportBug(C, BreaksConstraint, Call.getArgExpr(i));
-      } else if ((bool)StInBound == (bool)StOutBound) {
-        reportBug(C, MayBreakConstraint, Call.getArgExpr(i));
+  // Process secure_c_out annotations, if any
+  for (auto *SCInA : FD->specific_attrs<SecureCOutAttr>()) {
+    Expr *Target = SCInA->getTarget();
+    auto *DRE = cast<DeclRefExpr>(Target);
+    auto *PVD = cast<ParmVarDecl>(DRE->getDecl());
+    unsigned TI = PVD->getFunctionScopeIndex();
+    // Process annotations
+    for (Expr **APtr = SCInA->annotations_begin();
+         APtr < SCInA->annotations_end(); APtr++) {
+      Expr *AExpr = *APtr;
+      if (const auto *CE = dyn_cast<CallExpr>(AExpr)) {
+        if (const FunctionDecl *FD = CE->getDirectCallee()) {
+          const IdentifierInfo *II = FD->getIdentifier();
+          if (II && II->getName().equals("secure_buffer")) {
+            checkSecureBufferAttr(Call, C, PVD, CE->getArg(0), TI);
+          }
+        }
       }
     }
   }
@@ -302,4 +336,36 @@ void ento::registerSecureBufferChecker(CheckerManager &mgr) {
 // This checker should be enabled regardless of how language options are set.
 bool ento::shouldRegisterSecureBufferChecker(const LangOptions &LO) {
   return true;
+}
+
+void SecureBufferChecker::checkSecureBufferAttr(const CallEvent &Call,
+                                                CheckerContext &C,
+                                                const ParmVarDecl *PVD,
+                                                const Expr *LExpr,
+                                                unsigned Idx) const {
+  SValBuilder &SVB = C.getSValBuilder();
+  ProgramStateRef state = C.getState();
+  // Param is known to be a pointer type already, so this is safe
+  QualType elemType = PVD->getType()->getPointeeType();
+  SVal ArgVal = Call.getArgSVal(Idx);
+  DefinedOrUnknownSVal Length = getBufferLength(C, SVB, ArgVal);
+  if (Length.isUnknown()) {
+    reportBug(C, MayBreakConstraint, Call.getArgExpr(Idx));
+    return;
+  }
+
+  SVal ReqLengthElem = createSValForParamExpr(SVB, C, Call, LExpr);
+  SVal ReqLength = elementCountToByteCount(C, ReqLengthElem, elemType);
+  SVal InRange =
+      SVB.evalBinOp(state, BO_GE, Length, ReqLength, SVB.getArrayIndexType());
+
+  ProgramStateRef StInBound, StOutBound;
+  std::tie(StInBound, StOutBound) =
+      state->assume(InRange.castAs<DefinedOrUnknownSVal>());
+
+  if (StOutBound && !StInBound) {
+    reportBug(C, BreaksConstraint, Call.getArgExpr(Idx));
+  } else if ((bool)StInBound == (bool)StOutBound) {
+    reportBug(C, MayBreakConstraint, Call.getArgExpr(Idx));
+  }
 }
