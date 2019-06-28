@@ -1,4 +1,4 @@
-// RUN: clang -cc1 -analyze -analyzer-checker=secure-c.ValueRange -verify %s
+// RUN: %clang -cc1 -analyze -analyzer-checker=secure-c.ValueRange -verify %s
 int get(int *arr, unsigned int length, unsigned int idx)
     __attribute__((value_range(idx, 0, length - 1))) {
   return arr[idx];

@@ -1,4 +1,4 @@
-// RUN: clang -cc1 -analyze -analyzer-checker=secure-c.ValueRange -verify %s
+// RUN: %clang -cc1 -analyze -analyzer-checker=secure-c.ValueRange -verify %s
 char getLetter(int charIdx) __attribute__((value_range(charIdx, 0, 25))) {
   return 'A' + charIdx;
 }

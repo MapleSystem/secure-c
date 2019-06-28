@@ -1,4 +1,4 @@
-// RUN: clang -cc1 -analyze -analyzer-checker=secure-c.SecureCTaint -verify %s
+// RUN: %clang -cc1 -analyze -analyzer-checker=secure-c.SecureCTaint -verify %s
 void testUntrustIn(char *buf)
     __attribute__((
         secure_c_in(buf, "untrusted")));
