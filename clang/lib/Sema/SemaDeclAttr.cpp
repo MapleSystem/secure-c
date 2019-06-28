@@ -6593,31 +6593,42 @@ static bool checkSecureCInOut(Sema &S, Decl *D, const ParsedAttr &AL,
     if (const auto *CE = dyn_cast<CallExpr>(AExpr)) {
       if (const FunctionDecl *FD = CE->getDirectCallee()) {
         const IdentifierInfo *II = FD->getIdentifier();
-        if (!II)
-          return false;
-
-        if (II->getName().equals("value_range") && (CE->getNumArgs() == 2)) {
-          const Expr *Min = CE->getArg(0);
-          const Expr *Max = CE->getArg(1);
-          if (!checkValueRange(S, D, AL, Target, Min, Max))
-            return false;
-        } else if (II->getName().equals("secure_buffer") &&
-                   (CE->getNumArgs() == 1)) {
-          const Expr *Length = CE->getArg(0);
-          if (!checkSecureBuffer(S, D, AL, Target, Length))
-            return false;
-        } else {
-          return false;
+        if (II) {
+          if (II->getName().equals("value_range") && (CE->getNumArgs() == 2)) {
+            const Expr *Min = CE->getArg(0);
+            const Expr *Max = CE->getArg(1);
+            if (checkValueRange(S, D, AL, Target, Min, Max))
+              continue;
+            else
+              return false;
+          } else if (II->getName().equals("secure_buffer") &&
+                     (CE->getNumArgs() == 1)) {
+            const Expr *Length = CE->getArg(0);
+            if (checkSecureBuffer(S, D, AL, Target, Length))
+              continue;
+            else
+              return false;
+          }
         }
       }
     } else if (isa<StringLiteral>(AExpr)) {
       bool IsValid =
           isIn ? checkUntrustedIn(S, D, AL) : checkUntrustedOut(S, D, AL);
-      if (!IsValid)
+      if (IsValid)
+        continue;
+      else
         return false;
-    } else {
-      return false;
+    } else if (const DeclRefExpr *DRE = dyn_cast<DeclRefExpr>(AExpr)) {
+      const NamedDecl *ND = dyn_cast<NamedDecl>(DRE->getDecl());
+      if (ND && (ND->getName().equals("nonnull") ||
+                 ND->getName().equals("nullable"))) {
+        continue;
+      }
     }
+
+    S.Diag(Target->getExprLoc(), diag::err_unsupported_unknown_any_expr)
+        << AExpr->getSourceRange();
+    return false;
   }
   return true;
 }

@@ -6,25 +6,137 @@
 using namespace clang;
 using namespace ento;
 
+#ifndef DEBUG_TYPE
+#define DEBUG_TYPE "Secure-C Common"
+#endif
+
+// Scale a base value by a scaling factor, and return the scaled
+// value as an SVal.  Used by 'computeOffset'.
+static inline SVal scaleValue(ProgramStateRef State, NonLoc BaseVal,
+                              CharUnits Scaling, SValBuilder &SVB) {
+  return SVB.evalBinOpNN(State, BO_Mul, BaseVal,
+                         SVB.makeArrayIndex(Scaling.getQuantity()),
+                         SVB.getArrayIndexType());
+}
+
+/// Compute a raw byte offset from a base region.  Used for array bounds
+/// checking.
+LocationInfo LocationInfo::computeOffset(ProgramStateRef State,
+                                         SValBuilder &SVB, SVal Location) {
+  const MemRegion *Region = Location.getAsRegion();
+  SVal Offset = SVB.makeArrayIndex(0);
+
+  if (Region->getKind() == MemRegion::ElementRegionKind) {
+    const ElementRegion *ElemReg = cast<ElementRegion>(Region);
+    SVal Index = ElemReg->getIndex();
+    if (!Index.getAs<NonLoc>())
+      return LocationInfo();
+
+    QualType ElemType = ElemReg->getElementType();
+
+    // If the element is an incomplete type, go no further.
+    if (ElemType->isIncompleteType())
+      return LocationInfo();
+
+    // Set the offset.
+    Offset = scaleValue(State, Index.castAs<NonLoc>(),
+                        SVB.getContext().getTypeSizeInChars(ElemType), SVB);
+
+    // If we cannot determine the offset, return an invalid object
+    if (Offset.isUnknownOrUndef())
+      return LocationInfo();
+
+    Region = ElemReg->getSuperRegion();
+  }
+
+  if (const SubRegion *SubReg = dyn_cast<SubRegion>(Region)) {
+    return LocationInfo(SubReg, Offset);
+  }
+
+  return LocationInfo();
+}
+
 SVal createSValForParamExpr(SValBuilder &SVB, CheckerContext &C,
                             const CallEvent &Call, const Expr *E) {
+  return getValueForExpr(C, C.getState(), C.getSValBuilder(), E,
+                         C.getLocationContext(), &Call);
+}
+
+static const SubRegion *getBaseRegion(CheckerContext &C, ProgramStateRef State,
+                                      const Expr *E, const LocationContext *Loc,
+                                      const CallEvent *Call) {
+  if (const DeclRefExpr *DRE = dyn_cast<DeclRefExpr>(E)) {
+    if (Call) {
+      if (const ParmVarDecl *PVD =
+              dyn_cast_or_null<ParmVarDecl>(DRE->getDecl())) {
+        return dyn_cast<SubRegion>(
+            Call->getArgSVal(PVD->getFunctionScopeIndex()).getAsRegion());
+      }
+    }
+
+    if (const VarDecl *VD = dyn_cast_or_null<VarDecl>(DRE->getDecl()))
+      return State->getRegion(VD, Loc);
+  } else if (const MemberExpr *ME = dyn_cast<MemberExpr>(E)) {
+    const SubRegion *SR = getBaseRegion(
+        C, State, ME->getBase()->IgnoreParenImpCasts(), Loc, Call);
+    const FieldRegion *FR =
+        C.getStoreManager().getRegionManager().getFieldRegion(
+            dyn_cast<FieldDecl>(ME->getMemberDecl()), SR);
+    return FR;
+  }
+
+  return NULL;
+}
+
+DefinedOrUnknownSVal getValueForExpr(CheckerContext &C, ProgramStateRef State,
+                                     SValBuilder &SVB, const Expr *E,
+                                     const LocationContext *Loc,
+                                     const CallEvent *Call) {
   if (const IntegerLiteral *IL = dyn_cast<IntegerLiteral>(E)) {
     return SVB.makeIntVal(IL);
   } else if (const DeclRefExpr *DRE = dyn_cast<DeclRefExpr>(E)) {
-    if (const ParmVarDecl *PVD = dyn_cast_or_null<ParmVarDecl>(DRE->getDecl()))
-      return Call.getArgSVal(PVD->getFunctionScopeIndex());
+    if (Call) {
+      if (const ParmVarDecl *PVD =
+              dyn_cast_or_null<ParmVarDecl>(DRE->getDecl()))
+        return Call->getArgSVal(PVD->getFunctionScopeIndex())
+            .castAs<DefinedOrUnknownSVal>();
+    }
 
-    // References to other decls are not allowed
-    return UndefinedVal();
+    if (const VarDecl *VD = dyn_cast_or_null<VarDecl>(DRE->getDecl())) {
+      const MemRegion *MR = State->getRegion(VD, Loc);
+      return State->getSVal(MR, VD->getType()).castAs<DefinedOrUnknownSVal>();
+    }
+    return UnknownVal();
   } else if (const BinaryOperator *BO = dyn_cast<BinaryOperator>(E)) {
-    return SVB.evalBinOp(C.getState(), BO->getOpcode(),
-                         createSValForParamExpr(SVB, C, Call, BO->getLHS()),
-                         createSValForParamExpr(SVB, C, Call, BO->getRHS()),
-                         BO->getType());
+    return SVB
+        .evalBinOp(State, BO->getOpcode(),
+                   getValueForExpr(C, State, SVB, BO->getLHS(), Loc),
+                   getValueForExpr(C, State, SVB, BO->getRHS(), Loc),
+                   BO->getType())
+        .castAs<DefinedOrUnknownSVal>();
+  } else if (const MemberExpr *ME = dyn_cast<MemberExpr>(E)) {
+    const SubRegion *SR = getBaseRegion(
+        C, State, ME->getBase()->IgnoreParenImpCasts(), Loc, Call);
+    const ValueDecl *VD = ME->getMemberDecl();
+    const FieldRegion *FR =
+        C.getStoreManager().getRegionManager().getFieldRegion(
+            cast<FieldDecl>(VD), SR);
+    SVal Val = State->getSVal(FR, ME->getType());
+    return Val.castAs<DefinedOrUnknownSVal>();
   } else if (const CastExpr *CE = dyn_cast<CastExpr>(E)) {
-    return SVB.evalCast(createSValForParamExpr(SVB, C, Call, CE->getSubExpr()),
-                        CE->getType(), CE->getSubExpr()->getType());
+    return SVB
+        .evalCast(getValueForExpr(C, State, SVB, CE->getSubExpr(), Loc),
+                  CE->getType(), CE->getSubExpr()->getType())
+        .castAs<DefinedOrUnknownSVal>();
+  } else if (const ParenExpr *PE = dyn_cast<ParenExpr>(E)) {
+    return getValueForExpr(C, State, SVB, PE->getSubExpr(), Loc);
   }
 
-  return UndefinedVal();
+  SVal Val = State->getSVal(E, Loc);
+  if (!Val.isUndef())
+    return Val.castAs<DefinedOrUnknownSVal>();
+
+  llvm::errs() << "ERROR: Failed to get SVal for:\n";
+  E->dump();
+  return UnknownVal();
 }

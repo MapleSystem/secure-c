@@ -1,5 +1,4 @@
-//== SecureCNullabilityChecker.cpp ----------------------------------- -*- C++
-//-*--=//
+//== SecureCNullabilityChecker.cpp ---------------------------------*-C++-*--=//
 //
 // Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
 // See https://llvm.org/LICENSE.txt for license information.
@@ -11,8 +10,11 @@
 //
 //===----------------------------------------------------------------------===//
 #include "clang/AST/Attr.h"
+#include "clang/ASTMatchers/ASTMatchFinder.h"
+#include "clang/ASTMatchers/ASTMatchers.h"
 #include "clang/Basic/Builtins.h"
 #include "clang/StaticAnalyzer/Checkers/BuiltinCheckerRegistration.h"
+#include "clang/StaticAnalyzer/Checkers/SecureCCommon.h"
 #include "clang/StaticAnalyzer/Core/BugReporter/BugType.h"
 #include "clang/StaticAnalyzer/Core/Checker.h"
 #include "clang/StaticAnalyzer/Core/CheckerManager.h"
@@ -28,208 +30,178 @@
 #include <initializer_list>
 #include <iostream>
 #include <utility>
+
 using namespace clang;
 using namespace ento;
 
-using namespace llvm;
+#define DEBUG_TYPE "Secure-C Nullability"
 
 namespace {
 class SecureCNullabilityChecker
-    : public Checker<check::Location, check::PreCall, check::BranchCondition,
-                     check::PreStmt<ReturnStmt>, check::PreStmt<CallExpr>> {
+    : public Checker<check::BeginFunction, check::PreCall,
+                     check::BranchCondition, check::PreStmt<ReturnStmt>,
+                     check::PreStmt<CallExpr>, check::PreStmt<UnaryOperator>,
+                     check::PreStmt<MemberExpr>,
+                     check::PreStmt<ArraySubscriptExpr>> {
   // Errors
-  mutable std::unique_ptr<BuiltinBug> UndefPtrDeref;
-  mutable std::unique_ptr<BuiltinBug> NullOrUndefPtr;
-
-  // Warnings
-  std::unique_ptr<BugType> RedundantNullCheck;
+  mutable std::unique_ptr<BugType> BT;
 
   enum NullErrorKind {
-    NullPtrDereference,
-    UndefPtrDereference,
-    NullPtrParameter,
-    UndefPtrParameter,
-    NullPtrAccess,
+    NullablePtrAccess,
+    UnsafePromotion,
+    UnmetInConstraint,
+    UnmetOutConstraint,
+    RedundantNullCheck,
     NullErrorEnd
   };
 
   void TriageArgPointer(SVal L, const Expr *expr, CheckerContext &C) const;
 
-  void reportBug(ProgramStateRef State, const Stmt *S, CheckerContext &C,
-                 NullErrorKind ErrorKind) const;
-
-  void reportWarning(CheckerContext &C, const Expr *Arg) const;
+  void reportBug(CheckerContext &C, NullErrorKind ErrorKind,
+                 SourceRange Range) const;
 
 public:
-  SecureCNullabilityChecker();
-
-  void checkLocation(SVal location, bool isLoad, const Stmt *S,
-                     CheckerContext &C) const;
+  void checkBeginFunction(CheckerContext &C) const;
   void checkPreCall(const CallEvent &Call, CheckerContext &C) const;
   void checkPreStmt(const ReturnStmt *S, CheckerContext &C) const;
   void checkPreStmt(const CallExpr *CE, CheckerContext &C) const;
+  void checkPreStmt(const UnaryOperator *UO, CheckerContext &C) const;
+  void checkPreStmt(const MemberExpr *ME, CheckerContext &C) const;
+  void checkPreStmt(const ArraySubscriptExpr *ASE, CheckerContext &C) const;
   void checkBranchCondition(const Stmt *Condition, CheckerContext &C) const;
 };
 
 } // end of anonymous namespace
 
-SecureCNullabilityChecker::SecureCNullabilityChecker() {
-  // Warnings
-  RedundantNullCheck.reset(
-      new BugType(this, "Nonnull annotated pointer is checked for Null",
-                  "Secure-C Nullability Checker"));
+LLVM_DUMP_METHOD static void debug_error(CheckerContext &C, const Stmt *S, SVal Val) {
+  llvm::errs() << "Stmt with error:\n";
+  S->dump();
+  llvm::errs() << "Val: ";
+  Val.dump();
+  llvm::errs() << "\n";
+  C.getState()->getConstraintManager().print(C.getState(), llvm::errs(), "\n", "");
 }
 
-void SecureCNullabilityChecker::reportBug(ProgramStateRef State, const Stmt *S,
-                                          CheckerContext &C,
-                                          NullErrorKind ErrorKind) const {
+void SecureCNullabilityChecker::reportBug(CheckerContext &C,
+                                          NullErrorKind ErrorKind,
+                                          SourceRange Range) const {
 
-  // Generate an error node.
-  ExplodedNode *N = C.generateErrorNode(State);
+  const ExplodedNode *N = C.generateNonFatalErrorNode();
   if (!N)
     return;
 
-  if (!NullOrUndefPtr)
-    NullOrUndefPtr.reset(new BuiltinBug(this, "Nullability checker"));
+  if (!BT)
+    BT.reset(new BugType(this, "Nullability", "Secure-C"));
 
   SmallString<100> buf;
   llvm::raw_svector_ostream os(buf);
-  auto expr = dyn_cast<Expr>(S);
 
   switch (ErrorKind) {
-  case NullErrorKind::NullPtrDereference:
-    os << "Dereferencing a nullptr";
+  case NullErrorKind::UnsafePromotion:
+    os << "unsafe promotion from nullable pointer to non-null pointer";
     break;
-  case NullErrorKind::UndefPtrDereference:
-    os << "Dereferencing of undefined pointer";
+  case NullErrorKind::UnmetInConstraint:
+    os << "callee's in-constraint is not satisfied";
     break;
-  case NullErrorKind::NullPtrParameter:
-    os << "Null pointer passed when the parameter is Nonnull "
-          "annotated";
+  case NullErrorKind::UnmetOutConstraint:
+    os << "out-constraint is not satisfied upon return";
     break;
-  case NullErrorKind::UndefPtrParameter:
-    os << "Undefined pointer passed when the parameter is "
-          "Nonnull annotated";
+  case NullErrorKind::NullablePtrAccess:
+    os << "illegal access of nullable pointer";
     break;
-  case NullErrorKind::NullPtrAccess:
-    os << "Illegal access of nullable pointer type";
+  case NullErrorKind::RedundantNullCheck:
+    os << "redundant null check";
     break;
   default:
     os << "Unknown error description";
     break;
   }
 
-  auto report = llvm::make_unique<BugReport>(*NullOrUndefPtr, os.str(), N);
-  bugreporter::trackExpressionValue(N, expr, *report);
+  auto report = llvm::make_unique<BugReport>(*BT, os.str(), N);
+  report->addRange(Range);
   C.emitReport(std::move(report));
 }
 
-void SecureCNullabilityChecker::reportWarning(CheckerContext &C,
-                                              const Expr *Arg) const {
-  if (const ExplodedNode *N = C.generateNonFatalErrorNode()) {
-    auto report = llvm::make_unique<BugReport>(
-        *RedundantNullCheck,
-        "Known Nonnull annotated pointer is checked for Null", N);
-    report->addRange(Arg->getSourceRange());
-    C.emitReport(std::move(report));
-  }
-}
-
-static const Expr *getDereferenceExpr(const Stmt *S, bool IsBind = false) {
-  const Expr *E = nullptr;
-
-  // Walk through lvalue casts to get the original expression
-  // that syntactically caused the load.
-  if (const Expr *expr = dyn_cast<Expr>(S))
-    E = expr->IgnoreParenLValueCasts();
-
-  if (IsBind) {
-    const VarDecl *VD;
-    const Expr *Init;
-    std::tie(VD, Init) = parseAssignment(S);
-    if (VD && Init)
-      E = Init;
-  }
-  return E;
-}
-
-void SecureCNullabilityChecker::TriageArgPointer(SVal L, const Expr *expr,
-                                                 CheckerContext &C) const {
+void SecureCNullabilityChecker::checkBeginFunction(CheckerContext &C) const {
   ProgramStateRef State = C.getState();
-  bool undefPtr = L.isUndef(); // TODO: To be verified
-  bool isPtrNull = State->isNull(L).isConstrainedTrue();
-  if (expr->getType()->isPointerType()) {
-    if (getNullabilityAnnotation(expr->getType()) == Nullability::Nonnull &&
-        (undefPtr || isPtrNull)) {
-      // Report Error
-      auto ec = (isPtrNull) ? NullErrorKind::NullPtrParameter
-                            : NullErrorKind::UndefPtrParameter;
-      reportBug(State, expr, C, ec);
-    }
-  }
-}
-
-void SecureCNullabilityChecker::checkLocation(SVal l, bool isLoad,
-                                              const Stmt *S,
-                                              CheckerContext &C) const {
-  dbgs() << "Check Location\n";
-
-  ProgramStateRef state = C.getState();
-
-  // Check if the pointer is undefined
-  if (l.isUndef()) {
-    if (ExplodedNode *N = C.generateErrorNode()) {
-      if (!UndefPtrDeref)
-        UndefPtrDeref.reset(
-            new BuiltinBug(this, "Dereferencing an undefined pointer"));
-      auto report = llvm::make_unique<BugReport>(
-          *UndefPtrDeref, UndefPtrDeref->getDescription(), N);
-      bugreporter::trackExpressionValue(N, bugreporter::getDerefExpr(S),
-                                        *report);
-      C.emitReport(std::move(report));
-      return;
-    }
-  }
-
-  // Check if the pointer is NULL
-  DefinedOrUnknownSVal location = l.castAs<DefinedOrUnknownSVal>();
-
-  if (!location.getAs<Loc>())
+  SValBuilder &SVB = C.getSValBuilder();
+  const auto *LCtx = C.getLocationContext();
+  const auto *FD = dyn_cast_or_null<FunctionDecl>(LCtx->getDecl());
+  if (!FD)
     return;
 
-  ProgramStateRef notNullState, nullState;
-  std::tie(notNullState, nullState) = state->assume(location);
+  // Add assumptions for incoming nullability annotations
+  for (auto *SCInA : FD->specific_attrs<SecureCInAttr>()) {
+    Expr *Target = SCInA->getTarget();
+    DefinedOrUnknownSVal Val = getValueForExpr(C, State, SVB, Target, LCtx);
 
-  if (nullState && !notNullState) {
-    const Expr *expr = getDereferenceExpr(S);
-    if (!expr->getType().getQualifiers().hasAddressSpace()) {
-      reportBug(nullState, expr, C, NullPtrDereference);
+    for (Expr **APtr = SCInA->annotations_begin();
+         APtr < SCInA->annotations_end(); APtr++) {
+      Expr *AExpr = *APtr;
+      DeclRefExpr *DRE = dyn_cast<DeclRefExpr>(AExpr);
+      if (!DRE)
+        continue;
+
+      NamedDecl *ND = dyn_cast<NamedDecl>(DRE->getDecl());
+      if (!ND)
+        continue;
+
+      if (ND->getName().equals("nonnull")) {
+        SVal NotNullVal = SVB.evalBinOp(State, BO_NE, Val,
+                                        SVB.makeNullWithType(Target->getType()),
+                                        SVB.getConditionType());
+        assert(!NotNullVal.isUndef());
+        State = State->assume(NotNullVal.castAs<DefinedOrUnknownSVal>(), true);
+      }
     }
   }
+
+  C.addTransition(State);
 }
 
 void SecureCNullabilityChecker::checkPreCall(const CallEvent &Call,
                                              CheckerContext &C) const {
-  dbgs() << "Check PreCall\n";
-  if (!Call.getDecl())
+  const FunctionDecl *FD = dyn_cast_or_null<FunctionDecl>(Call.getDecl());
+  if (!FD)
     return;
 
-  unsigned numArgs = Call.getNumArgs();
-  auto Parameters = Call.parameters();
-  for (unsigned idx = 0; idx < numArgs; idx++) {
-    const Expr *expr = Call.getArgExpr(idx);
-    SVal L = Call.getArgSVal(idx);
-    TriageArgPointer(L, expr, C);
+  ProgramStateRef State = C.getState();
+  SValBuilder &SVB = C.getSValBuilder();
+
+  // Check `secure_c_in` requirements of callee
+  for (auto *SCInA : FD->specific_attrs<SecureCInAttr>()) {
+    Expr *Target = SCInA->getTarget();
+    SVal TargetVal = createSValForParamExpr(SVB, C, Call, Target);
+    assert(!TargetVal.isUndef());
+
+    for (Expr **APtr = SCInA->annotations_begin();
+         APtr < SCInA->annotations_end(); APtr++) {
+      Expr *AExpr = *APtr;
+      DeclRefExpr *DRE = dyn_cast<DeclRefExpr>(AExpr);
+      if (!DRE)
+        continue;
+
+      NamedDecl *ND = dyn_cast<NamedDecl>(DRE->getDecl());
+      if (!ND)
+        continue;
+
+      if (ND->getName().equals("nonnull")) {
+        if (State->assume(TargetVal.castAs<DefinedOrUnknownSVal>(), false)) {
+          // debug_error(C, Target, TargetVal);
+          reportBug(C, UnmetInConstraint, Call.getSourceRange());
+        }
+      }
+    }
   }
 }
 
 void SecureCNullabilityChecker::checkPreStmt(const ReturnStmt *S,
                                              CheckerContext &C) const {
-  dbgs() << "Check PreStmt: ReturnStmt\n";
-
   ProgramStateRef State = C.getState();
 
   const Expr *retExpr = S->getRetValue();
+  if (!retExpr)
+    return;
 
   if (retExpr->getType()->isPointerType()) {
     QualType RequiredRetType;
@@ -246,38 +218,81 @@ void SecureCNullabilityChecker::checkPreStmt(const ReturnStmt *S,
     bool isPtrNullableAnnotated =
         (getNullabilityAnnotation(retExpr->getType()) == Nullability::Nullable);
     if (isPtrNullableAnnotated && isRetNonnullAnnotated)
-      reportBug(State, retExpr, C, NullErrorKind::NullPtrAccess);
+      reportBug(C, UnsafePromotion, retExpr->getSourceRange());
     return;
-  }
-
-  if (const ImplicitCastExpr *ICE = dyn_cast<ImplicitCastExpr>(retExpr)) {
-    if (const UnaryOperator *UO = dyn_cast<UnaryOperator>(ICE->getSubExpr())) {
-      if (UO->getOpcode() == UO_Deref) {
-        bool isNullableAnnotated =
-            (getNullabilityAnnotation(UO->getSubExpr()->getType()) ==
-             Nullability::Nullable);
-        if (isNullableAnnotated)
-          reportBug(State, retExpr, C, NullPtrDereference);
-      }
-    }
   }
 }
 
 void SecureCNullabilityChecker::checkPreStmt(const CallExpr *CE,
                                              CheckerContext &C) const {
-  dbgs() << "Check PreStmt: CallExpr\n";
+  ProgramStateRef State = C.getState();
 
-  for (unsigned idx = 0; idx < CE->getNumArgs(); idx++) {
-    const Expr *arg = CE->getArg(idx);
-    SVal L = C.getSVal(arg);
-    TriageArgPointer(L, arg, C);
+  const Expr *Callee = CE->getCallee();
+  if (Callee->IgnoreParenImpCasts()->isLValue()) {
+    SVal Val = getValueForExpr(C, State, C.getSValBuilder(), Callee,
+                               C.getLocationContext());
+    if (Val.isUndef() ||
+        State->assume(Val.castAs<DefinedOrUnknownSVal>(), false)) {
+      // debug_error(C, CE, Val);
+      reportBug(C, NullablePtrAccess, CE->getSourceRange());
+      return;
+    }
+  }
+}
+
+void SecureCNullabilityChecker::checkPreStmt(const UnaryOperator *UO,
+                                             CheckerContext &C) const {
+  if (UO->getOpcode() != UO_Deref)
+    return;
+
+  ProgramStateRef State = C.getState();
+
+  const Expr *Pointer = UO->getSubExpr();
+  SVal Val = getValueForExpr(C, State, C.getSValBuilder(), Pointer,
+                             C.getLocationContext());
+  if (Val.isUndef() ||
+      State->assume(Val.castAs<DefinedOrUnknownSVal>(), false)) {
+    // debug_error(C, UO, Val);
+    reportBug(C, NullablePtrAccess, UO->getSourceRange());
+    return;
+  }
+}
+
+void SecureCNullabilityChecker::checkPreStmt(const MemberExpr *ME,
+                                             CheckerContext &C) const {
+  if (!ME->isArrow())
+    return;
+
+  ProgramStateRef State = C.getState();
+
+  const Expr *Pointer = ME->getBase();
+  SVal Val = getValueForExpr(C, State, C.getSValBuilder(), Pointer,
+                             C.getLocationContext());
+  if (Val.isUndef() ||
+      State->assume(Val.castAs<DefinedOrUnknownSVal>(), false)) {
+    // debug_error(C, ME, Val);
+    reportBug(C, NullablePtrAccess, ME->getSourceRange());
+    return;
+  }
+}
+
+void SecureCNullabilityChecker::checkPreStmt(const ArraySubscriptExpr *ASE,
+                                             CheckerContext &C) const {
+  ProgramStateRef State = C.getState();
+
+  const Expr *Pointer = ASE->getBase();
+  SVal Val = getValueForExpr(C, State, C.getSValBuilder(), Pointer,
+                             C.getLocationContext());
+  if (Val.isUndef() ||
+      State->assume(Val.castAs<DefinedOrUnknownSVal>(), false)) {
+    // debug_error(C, ASE, Val);
+    reportBug(C, NullablePtrAccess, ASE->getSourceRange());
+    return;
   }
 }
 
 void SecureCNullabilityChecker::checkBranchCondition(const Stmt *Condition,
                                                      CheckerContext &C) const {
-  dbgs() << "Check BranchCondition\n";
-
   ProgramStateRef State = C.getState();
 
   if (const BinaryOperator *BO = dyn_cast<BinaryOperator>(Condition)) {
@@ -290,7 +305,7 @@ void SecureCNullabilityChecker::checkBranchCondition(const Stmt *Condition,
         if (LHS->getType()->isPointerType()) {
           if (getNullabilityAnnotation(LHS->getType()) ==
               Nullability::Nonnull) {
-            reportWarning(C, LHS);
+            reportBug(C, RedundantNullCheck, LHS->getSourceRange());
           }
         }
       }
@@ -302,7 +317,7 @@ void SecureCNullabilityChecker::checkBranchCondition(const Stmt *Condition,
         if (RHS->getType()->isPointerType()) {
           if (getNullabilityAnnotation(RHS->getType()) ==
               Nullability::Nonnull) {
-            reportWarning(C, RHS);
+            reportBug(C, RedundantNullCheck, RHS->getSourceRange());
           }
         }
       }
