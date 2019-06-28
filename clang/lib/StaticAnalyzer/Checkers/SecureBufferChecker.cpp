@@ -65,28 +65,6 @@ public:
   void dump(ProgramStateRef state) const;
 };
 
-// Used to compute the base and offset of a memory location
-class LocationInfo {
-private:
-  const SubRegion *BaseRegion;
-  SVal ByteOffset;
-
-  LocationInfo() : BaseRegion(nullptr), ByteOffset(UnknownVal()) {}
-
-public:
-  LocationInfo(const SubRegion *Base, SVal Offset)
-      : BaseRegion(Base), ByteOffset(Offset) {}
-
-  NonLoc getByteOffset() const { return ByteOffset.castAs<NonLoc>(); }
-  const SubRegion *getRegion() const { return BaseRegion; }
-
-  static LocationInfo computeOffset(ProgramStateRef State, SValBuilder &SVB,
-                                    SVal Location);
-
-  void dump() const;
-  void dumpToStream(raw_ostream &OS) const;
-};
-
 } // end anonymous namespace
 
 REGISTER_MAP_WITH_PROGRAMSTATE(SecureBufferLength, const MemRegion *, SVal)
@@ -234,82 +212,6 @@ void SecureBufferChecker::checkLocation(SVal Location, bool IsLoad,
   }
 }
 
-// Scale a base value by a scaling factor, and return the scaled
-// value as an SVal.  Used by 'computeOffset'.
-static inline SVal scaleValue(ProgramStateRef State, NonLoc BaseVal,
-                              CharUnits Scaling, SValBuilder &SVB) {
-  return SVB.evalBinOpNN(State, BO_Mul, BaseVal,
-                         SVB.makeArrayIndex(Scaling.getQuantity()),
-                         SVB.getArrayIndexType());
-}
-
-/// Compute a raw byte offset from a base region.  Used for array bounds
-/// checking.
-LocationInfo LocationInfo::computeOffset(ProgramStateRef State,
-                                         SValBuilder &SVB, SVal Location) {
-  const MemRegion *Region = Location.getAsRegion();
-  SVal Offset = SVB.makeArrayIndex(0);
-
-  if (Region->getKind() == MemRegion::ElementRegionKind) {
-    const ElementRegion *ElemReg = cast<ElementRegion>(Region);
-    SVal Index = ElemReg->getIndex();
-    if (!Index.getAs<NonLoc>())
-      return LocationInfo();
-
-    QualType ElemType = ElemReg->getElementType();
-
-    // If the element is an incomplete type, go no further.
-    if (ElemType->isIncompleteType())
-      return LocationInfo();
-
-    // Set the offset.
-    Offset = scaleValue(State, Index.castAs<NonLoc>(),
-                        SVB.getContext().getTypeSizeInChars(ElemType), SVB);
-
-    // If we cannot determine the offset, return an invalid object
-    if (Offset.isUnknownOrUndef())
-      return LocationInfo();
-
-    Region = ElemReg->getSuperRegion();
-  }
-
-  if (const SubRegion *SubReg = dyn_cast<SubRegion>(Region)) {
-    return LocationInfo(SubReg, Offset);
-  }
-
-  return LocationInfo();
-}
-
-static DefinedOrUnknownSVal getValueForExpr(ProgramStateRef state,
-                                            SValBuilder &SVB, const Expr *E,
-                                            const LocationContext *Loc) {
-  if (const IntegerLiteral *IL = dyn_cast<IntegerLiteral>(E)) {
-    return SVB.makeIntVal(IL);
-  } else if (const DeclRefExpr *DRE = dyn_cast<DeclRefExpr>(E)) {
-    if (const ParmVarDecl *PVD =
-            dyn_cast_or_null<ParmVarDecl>(DRE->getDecl())) {
-      const MemRegion *Param = state->getRegion(PVD, Loc);
-      return state->getSVal(Param, PVD->getType())
-          .castAs<DefinedOrUnknownSVal>();
-    }
-    return UnknownVal();
-  } else if (const BinaryOperator *BO = dyn_cast<BinaryOperator>(E)) {
-    return SVB
-        .evalBinOp(state, BO->getOpcode(),
-                   getValueForExpr(state, SVB, BO->getLHS(), Loc),
-                   getValueForExpr(state, SVB, BO->getRHS(), Loc),
-                   BO->getType())
-        .castAs<DefinedOrUnknownSVal>();
-  } else if (const CastExpr *CE = dyn_cast<CastExpr>(E)) {
-    return SVB
-        .evalCast(getValueForExpr(state, SVB, CE->getSubExpr(), Loc),
-                  CE->getType(), CE->getSubExpr()->getType())
-        .castAs<DefinedOrUnknownSVal>();
-  }
-
-  return UnknownVal();
-}
-
 SVal SecureBufferChecker::getLengthForRegion(CheckerContext &C,
                                              ProgramStateRef &state,
                                              const Expr *E,
@@ -366,7 +268,7 @@ void SecureBufferChecker::checkBeginFunction(CheckerContext &C) const {
     if (SecureBufferAttr *SBA = PVD->getAttr<SecureBufferAttr>()) {
       SVal LengthVal = getLengthForParam(C, state, SBA->getBuffer(), PVD);
       DefinedOrUnknownSVal SBLength =
-          getValueForExpr(state, SVB, SBA->getLength(), LCtx);
+          getValueForExpr(C, state, SVB, SBA->getLength(), LCtx);
       assert(!SBLength.isUnknown());
       SVal SBLengthVal = SBLength;
       const RangeSet *RS =

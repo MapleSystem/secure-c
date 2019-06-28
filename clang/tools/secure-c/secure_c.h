@@ -12,6 +12,9 @@
 #define _Nullable
 #endif
 
+int nonnull;
+int nullable;
+
 static void *_Nonnull _CheckNonNull(const char *_Nonnull file, int line,
                                     const char *_Nonnull func,
                                     void *_Nullable p) {
