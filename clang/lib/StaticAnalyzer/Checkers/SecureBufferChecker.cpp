@@ -40,10 +40,6 @@ class SecureBufferChecker
 
   void reportBug(CheckerContext &C, SB_Kind Kind, const Stmt *S) const;
 
-  SVal getLengthForRegion(CheckerContext &C, ProgramStateRef &state,
-                          const Expr *E, const MemRegion *MR) const;
-  SVal getLengthForParam(CheckerContext &C, ProgramStateRef &state,
-                         const Expr *DRE, const ParmVarDecl *PVD) const;
   DefinedOrUnknownSVal getBufferLength(CheckerContext &C, SValBuilder &SVB,
                                        SVal Val) const;
 
@@ -212,47 +208,6 @@ void SecureBufferChecker::checkLocation(SVal Location, bool IsLoad,
   }
 }
 
-SVal SecureBufferChecker::getLengthForRegion(CheckerContext &C,
-                                             ProgramStateRef &state,
-                                             const Expr *E,
-                                             const MemRegion *MR) const {
-  // If we already have a length recorded for this buffer, use it
-  const SVal *Recorded = state->get<SecureBufferLength>(MR);
-  if (Recorded)
-    return *Recorded;
-
-  // Else, create a new symbol and add it to the state
-  SValBuilder &SVB = C.getSValBuilder();
-  QualType SizeTy = SVB.getContext().getSizeType();
-  SVal Length = SVB.getMetadataSymbolVal(
-      getTag(), MR, E, SizeTy, C.getLocationContext(), C.blockCount());
-
-  if (const SubRegion *SR = dyn_cast<SubRegion>(MR)) {
-    DefinedOrUnknownSVal extentEqualsMetadata =
-        SVB.evalEQ(state, SR->getExtent(SVB), Length)
-            .castAs<DefinedOrUnknownSVal>();
-    state = state->assume(extentEqualsMetadata, true);
-  }
-
-  state = state->set<SecureBufferLength>(MR, Length);
-  return Length;
-}
-
-SVal SecureBufferChecker::getLengthForParam(CheckerContext &C,
-                                            ProgramStateRef &state,
-                                            const Expr *DRE,
-                                            const ParmVarDecl *PVD) const {
-  const LocationContext *LCtx = C.getLocationContext();
-
-  const MemRegion *MR = state->getRegion(PVD, LCtx);
-  SVal MRSVal = state->getSVal(MR);
-  MR = MRSVal.getAsRegion();
-  if (!MR) {
-    return UndefinedVal();
-  }
-  return getLengthForRegion(C, state, DRE, MR);
-}
-
 void SecureBufferChecker::checkBeginFunction(CheckerContext &C) const {
   ProgramStateRef state = C.getState();
   SValBuilder &SVB = C.getSValBuilder();
@@ -264,22 +219,22 @@ void SecureBufferChecker::checkBeginFunction(CheckerContext &C) const {
   // Attributes on function parameters
   for (unsigned int i = 0; i < FD->getNumParams(); i++) {
     const ParmVarDecl *PVD = FD->getParamDecl(i);
+    const MemRegion *MR = state->getRegion(PVD, LCtx);
+    SVal MRSVal = state->getSVal(MR);
+    MR = MRSVal.getAsRegion();
+    assert(MR);
+    const SubRegion *SR = dyn_cast<SubRegion>(MR);
+    assert(SR);
 
     if (SecureBufferAttr *SBA = PVD->getAttr<SecureBufferAttr>()) {
-      SVal LengthVal = getLengthForParam(C, state, SBA->getBuffer(), PVD);
       DefinedOrUnknownSVal SBLength =
           getValueForExpr(C, state, SVB, SBA->getLength(), LCtx);
       assert(!SBLength.isUnknown());
-      SVal SBLengthVal = SBLength;
-      const RangeSet *RS =
-          state->get<ConstraintRange>(SBLengthVal.getAsSymbol());
-      if (RS) {
-        state = state->set<ConstraintRange>(LengthVal.getAsSymbol(), *RS);
-      }
-
-      DefinedOrUnknownSVal extentMatchesSize =
-          SVB.evalEQ(state, LengthVal.castAs<DefinedSVal>(),
-                     SBLengthVal.castAs<DefinedSVal>());
+      SVal SBLengthBytes = elementCountToByteCount(
+          C, SBLength, PVD->getType()->getPointeeType());
+      state = state->set<SecureBufferLength>(MR, SBLengthBytes);
+      DefinedOrUnknownSVal extentMatchesSize = SVB.evalEQ(
+          state, SR->getExtent(SVB), SBLengthBytes.castAs<DefinedSVal>());
       state = state->assume(extentMatchesSize, true);
     }
   }
@@ -298,7 +253,7 @@ void SecureBufferChecker::checkLiveSymbols(ProgramStateRef state,
     for (SymExpr::symbol_iterator si = Len.symbol_begin(),
                                   se = Len.symbol_end();
          si != se; ++si) {
-      SR.markInUse(*si);
+      SR.markLive(*si); // Ensure any symbols used in the length are kept alive
     }
   }
 }
