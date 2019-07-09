@@ -9,8 +9,9 @@ int simple_safe() {
 }
 
 int simple_outside() {
-  int a[3] = {0,1,2};
-  return a[3]; // expected-warning {{Buffer access is out of bounds}}
+  int a[3] = {0,1,2}; // expected-note {{array 'a' declared here}}
+  return a[3]; // expected-warning {{Buffer access is out of bounds}} \
+               // expected-warning {{array index 3 is past the end of the array}}
 }
 
 int safe(int *_Nonnull buf) __attribute__((secure_buffer(buf, 10))) {
@@ -55,5 +56,5 @@ int param_length_binop(int * _Nonnull buf, unsigned int x)
 
 int param_length_cast(int * _Nonnull buf, int length)
     __attribute__((secure_buffer(buf, (unsigned char) length))) {
-  return buf[0];
+  return buf[0]; // expected-warning {{Buffer access may be out of bounds}}
 }
