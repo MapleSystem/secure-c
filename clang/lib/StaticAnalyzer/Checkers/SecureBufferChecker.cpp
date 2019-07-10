@@ -219,14 +219,15 @@ void SecureBufferChecker::checkBeginFunction(CheckerContext &C) const {
   // Attributes on function parameters
   for (unsigned int i = 0; i < FD->getNumParams(); i++) {
     const ParmVarDecl *PVD = FD->getParamDecl(i);
-    const MemRegion *MR = state->getRegion(PVD, LCtx);
-    SVal MRSVal = state->getSVal(MR);
-    MR = MRSVal.getAsRegion();
-    assert(MR);
-    const SubRegion *SR = dyn_cast<SubRegion>(MR);
-    assert(SR);
 
     if (SecureBufferAttr *SBA = PVD->getAttr<SecureBufferAttr>()) {
+      const MemRegion *MR = state->getRegion(PVD, LCtx);
+      SVal MRSVal = state->getSVal(MR);
+      MR = MRSVal.getAsRegion();
+      assert(MR);
+      const SubRegion *SR = dyn_cast<SubRegion>(MR);
+      assert(SR);
+
       DefinedOrUnknownSVal SBLength =
           getValueForExpr(C, state, SVB, SBA->getLength(), LCtx);
       assert(!SBLength.isUnknown());
