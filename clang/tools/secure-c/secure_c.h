@@ -14,6 +14,8 @@
 
 int nonnull;
 int nullable;
+void secure_buffer(int);
+void value_range(int, int);
 
 static void *_Nonnull _CheckNonNull(const char *_Nonnull file, int line,
                                     const char *_Nonnull func,

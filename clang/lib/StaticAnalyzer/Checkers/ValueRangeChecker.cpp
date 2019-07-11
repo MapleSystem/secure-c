@@ -239,6 +239,49 @@ void ValueRangeChecker::checkBeginFunction(CheckerContext &C) const {
     }
   }
 
+  // Process secure_c_in annotations, if any
+  for (auto *SCInA : FD->specific_attrs<SecureCInAttr>()) {
+    Expr *Target = SCInA->getTarget();
+    auto *DRE = cast<DeclRefExpr>(Target);
+    auto *PVD = cast<ParmVarDecl>(DRE->getDecl());
+
+    // Process annotations
+    for (Expr **APtr = SCInA->annotations_begin();
+         APtr < SCInA->annotations_end(); APtr++) {
+      Expr *AExpr = *APtr;
+      if (const auto *CE = dyn_cast<CallExpr>(AExpr)) {
+        if (const FunctionDecl *FD = CE->getDirectCallee()) {
+          const IdentifierInfo *II = FD->getIdentifier();
+          if (II && II->getName().equals("value_range")) {
+            // Find parameter variable's symbolic value
+            Loc ParamLoc = state->getLValue(PVD, LCtx);
+            DefinedOrUnknownSVal ParamValue =
+                state->getSVal(ParamLoc, PVD->getType())
+                    .castAs<DefinedOrUnknownSVal>();
+
+            const Expr *MinExpr = CE->getArg(0);
+            const Expr *MaxExpr = CE->getArg(1);
+
+            Expr::EvalResult MinExprResult;
+            if (!MinExpr->EvaluateAsInt(MinExprResult, Context)) {
+              llvm_unreachable("Minimum value is not an integer constant");
+            }
+            llvm::APSInt LoBound = MinExprResult.Val.getInt();
+
+            Expr::EvalResult MaxExprResult;
+            if (!MaxExpr->EvaluateAsInt(MaxExprResult, Context)) {
+              llvm_unreachable("Maximum value is not an integer constant");
+            }
+            llvm::APSInt HiBound = MaxExprResult.Val.getInt();
+
+            state =
+                state->assumeInclusiveRange(ParamValue, LoBound, HiBound, true);
+          }
+        }
+      }
+    }
+  }
+
   C.addTransition(state);
 }
 
