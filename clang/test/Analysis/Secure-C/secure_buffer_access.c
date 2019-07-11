@@ -1,24 +1,29 @@
-// RUN: %clang -fsyntax-only -Xclang -analyze \
+// RUN: %clang -fsyntax-only -I %S/../../../tools/secure-c/ \
+// RUN:   -Xclang -analyze \
 // RUN:   -Xclang -analyzer-config -Xclang ipa=none \
 // RUN:   -Xclang -analyzer-checker=unix.DynamicMemoryModeling \
 // RUN:   -Xclang -analyzer-checker=secure-c.ValueRange \
 // RUN:   -Xclang -analyzer-checker=secure-c.SecureBuffer -Xclang -verify %s
+#include <secure_c.h>
+
 int simple_safe() {
-  int a[10] = {0,1,2,3,4,5,6,7,8,9};
+  int a[10] = {0, 1, 2, 3, 4, 5, 6, 7, 8, 9};
   return a[4];
 }
 
 int simple_outside() {
-  int a[3] = {0,1,2}; // expected-note {{array 'a' declared here}}
-  return a[3]; // expected-warning {{Buffer access is out of bounds}} \
+  int a[3] = {0, 1, 2}; // expected-note {{array 'a' declared here}}
+  return a[3];          // expected-warning {{Buffer access is out of bounds}} \
                // expected-warning {{array index 3 is past the end of the array}}
 }
 
-int safe(int *_Nonnull buf) __attribute__((secure_buffer(buf, 10))) {
+int safe(int *_Nonnull buf)
+    __attribute__((secure_c_in(buf, secure_buffer(10)))) {
   return buf[9];
 }
 
-int outside(int *_Nonnull buf) __attribute__((secure_buffer(buf, 10))) {
+int outside(int *_Nonnull buf)
+    __attribute__((secure_c_in(buf, secure_buffer(10)))) {
   return buf[10]; // expected-warning {{Buffer access is out of bounds}}
 }
 
@@ -27,34 +32,34 @@ int unannotated(int *_Nonnull buf) {
 }
 
 int safe_range(int *_Nonnull buf, int idx)
-    __attribute__((secure_buffer(buf, 10),
-                   value_range(idx, 0, 9))) {
+    __attribute__((secure_buffer(buf, 10), value_range(idx, 0, 9))) {
   return buf[idx];
 }
 
-int unknown_range(int *_Nonnull buf, int idx) __attribute__((secure_buffer(buf, 10))) {
+int unknown_range(int *_Nonnull buf, int idx)
+    __attribute__((secure_c_in(buf, secure_buffer(10)))) {
   return buf[idx]; // expected-warning {{Buffer access may be out of bounds}}
 }
 
 int maybe_out_of_range(int *_Nonnull buf, int idx)
-    __attribute__((secure_buffer(buf, 10),
-                   value_range(idx, 0, 10))) {
+    __attribute__((secure_c_in(buf, secure_buffer(10)),
+                   secure_c_in(idx, value_range(0, 10)))) {
   return buf[idx]; // expected-warning {{Buffer access may be out of bounds}}
 }
 
 int out_of_range(int *_Nonnull buf, int idx)
-    __attribute__((secure_buffer(buf, 10),
-                   value_range(idx, 10, 20))) {
+    __attribute__((secure_c_in(buf, secure_buffer(10)),
+                   secure_c_in(idx, value_range(10, 20)))) {
   return buf[idx]; // expected-warning {{Buffer access is out of bounds}}
 }
 
-int param_length_binop(int * _Nonnull buf, unsigned int x)
-    __attribute__((secure_buffer(buf, x*2+1),
-                   value_range(x, 0, 100))) {
+int param_length_binop(int *_Nonnull buf, unsigned int x)
+    __attribute__((secure_c_in(buf, secure_buffer(x * 2 + 1)),
+                   secure_c_in(x, value_range(0, 100)))) {
   return buf[0];
 }
 
-int param_length_cast(int * _Nonnull buf, int length)
-    __attribute__((secure_buffer(buf, (unsigned char) length))) {
+int param_length_cast(int *_Nonnull buf, int length)
+    __attribute__((secure_c_in(buf, secure_buffer((unsigned char)length)))) {
   return buf[0]; // expected-warning {{Buffer access may be out of bounds}}
 }

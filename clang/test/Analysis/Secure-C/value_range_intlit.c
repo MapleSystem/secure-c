@@ -1,5 +1,11 @@
-// RUN: %clang -cc1 -analyze -analyzer-checker=secure-c.ValueRange -verify %s
-char getLetter(int charIdx) __attribute__((value_range(charIdx, 0, 25))) {
+// RUN: %clang -fsyntax-only -I %S/../../../tools/secure-c/ \
+// RUN:   -Xclang -analyze \
+// RUN:   -Xclang -analyzer-config -Xclang ipa=none \
+// RUN:   -Xclang -analyzer-checker=secure-c.ValueRange -Xclang -verify %s
+#include <secure_c.h>
+
+char getLetter(int charIdx)
+    __attribute__((secure_c_in(charIdx, value_range(0, 25)))) {
   return 'A' + charIdx;
 }
 
