@@ -63,6 +63,11 @@ public:
   void dump(ProgramStateRef state) const;
 
 private:
+  bool isSecureBufferAttr(const Expr *AttrExpr, const Expr *&LengthExpr) const;
+  ProgramStateRef assumeSecureBufferAttr(CheckerContext &C,
+                                         ProgramStateRef state,
+                                         const ParmVarDecl *Target,
+                                         const Expr *LengthExpr) const;
   void checkSecureBufferAttr(const CallEvent &Call, CheckerContext &C,
                              const ParmVarDecl *PVD, const Expr *LExpr,
                              unsigned Idx) const;
@@ -168,14 +173,9 @@ void SecureBufferChecker::checkPreCall(const CallEvent &Call,
     // Process annotations
     for (Expr **APtr = SCInA->annotations_begin();
          APtr < SCInA->annotations_end(); APtr++) {
-      Expr *AExpr = *APtr;
-      if (const auto *CE = dyn_cast<CallExpr>(AExpr)) {
-        if (const FunctionDecl *FD = CE->getDirectCallee()) {
-          const IdentifierInfo *II = FD->getIdentifier();
-          if (II && II->getName().equals("secure_buffer")) {
-            checkSecureBufferAttr(Call, C, PVD, CE->getArg(0), TI);
-          }
-        }
+      const Expr *LengthExpr;
+      if (isSecureBufferAttr(*APtr, LengthExpr)) {
+        checkSecureBufferAttr(Call, C, PVD, LengthExpr, TI);
       }
     }
   }
@@ -200,14 +200,9 @@ void SecureBufferChecker::checkPostCall(const CallEvent &Call,
     // Process annotations
     for (Expr **APtr = SCInA->annotations_begin();
          APtr < SCInA->annotations_end(); APtr++) {
-      Expr *AExpr = *APtr;
-      if (const auto *CE = dyn_cast<CallExpr>(AExpr)) {
-        if (const FunctionDecl *FD = CE->getDirectCallee()) {
-          const IdentifierInfo *II = FD->getIdentifier();
-          if (II && II->getName().equals("secure_buffer")) {
-            checkSecureBufferAttr(Call, C, PVD, CE->getArg(0), TI);
-          }
-        }
+      const Expr *LengthExpr;
+      if (isSecureBufferAttr(*APtr, LengthExpr)) {
+        checkSecureBufferAttr(Call, C, PVD, LengthExpr, TI);
       }
     }
   }
@@ -244,7 +239,6 @@ void SecureBufferChecker::checkLocation(SVal Location, bool IsLoad,
 
 void SecureBufferChecker::checkBeginFunction(CheckerContext &C) const {
   ProgramStateRef state = C.getState();
-  SValBuilder &SVB = C.getSValBuilder();
   const auto *LCtx = C.getLocationContext();
   const auto *FD = dyn_cast_or_null<FunctionDecl>(LCtx->getDecl());
   if (!FD)
@@ -255,22 +249,7 @@ void SecureBufferChecker::checkBeginFunction(CheckerContext &C) const {
     const ParmVarDecl *PVD = FD->getParamDecl(i);
 
     if (SecureBufferAttr *SBA = PVD->getAttr<SecureBufferAttr>()) {
-      const MemRegion *MR = state->getRegion(PVD, LCtx);
-      SVal MRSVal = state->getSVal(MR);
-      MR = MRSVal.getAsRegion();
-      assert(MR);
-      const SubRegion *SR = dyn_cast<SubRegion>(MR);
-      assert(SR);
-
-      DefinedOrUnknownSVal SBLength =
-          getValueForExpr(C, state, SVB, SBA->getLength(), LCtx);
-      assert(!SBLength.isUnknown());
-      SVal SBLengthBytes = elementCountToByteCount(
-          C, SBLength, PVD->getType()->getPointeeType());
-      state = state->set<SecureBufferLength>(MR, SBLengthBytes);
-      DefinedOrUnknownSVal extentMatchesSize = SVB.evalEQ(
-          state, SR->getExtent(SVB), SBLengthBytes.castAs<DefinedSVal>());
-      state = state->assume(extentMatchesSize, true);
+      state = assumeSecureBufferAttr(C, state, PVD, SBA->getLength());
     }
   }
 
@@ -283,28 +262,9 @@ void SecureBufferChecker::checkBeginFunction(CheckerContext &C) const {
     // Process annotations
     for (Expr **APtr = SCInA->annotations_begin();
          APtr < SCInA->annotations_end(); APtr++) {
-      Expr *AExpr = *APtr;
-      if (const auto *CE = dyn_cast<CallExpr>(AExpr)) {
-        if (const FunctionDecl *FD = CE->getDirectCallee()) {
-          const IdentifierInfo *II = FD->getIdentifier();
-          if (II && II->getName().equals("secure_buffer")) {
-            const MemRegion *MR = state->getRegion(PVD, LCtx);
-            SVal MRSVal = state->getSVal(MR);
-            MR = MRSVal.getAsRegion();
-            assert(MR);
-            const SubRegion *SR = dyn_cast<SubRegion>(MR);
-            assert(SR);
-            DefinedOrUnknownSVal SBLength =
-                getValueForExpr(C, state, SVB, CE->getArg(0), LCtx);
-            assert(!SBLength.isUnknown());
-            SVal SBLengthBytes = elementCountToByteCount(
-                C, SBLength, PVD->getType()->getPointeeType());
-            state = state->set<SecureBufferLength>(MR, SBLengthBytes);
-            DefinedOrUnknownSVal extentMatchesSize = SVB.evalEQ(
-                state, SR->getExtent(SVB), SBLengthBytes.castAs<DefinedSVal>());
-            state = state->assume(extentMatchesSize, true);
-          }
-        }
+      const Expr *LengthExpr;
+      if (isSecureBufferAttr(*APtr, LengthExpr)) {
+        state = assumeSecureBufferAttr(C, state, PVD, LengthExpr);
       }
     }
   }
@@ -371,6 +331,44 @@ void ento::registerSecureBufferChecker(CheckerManager &mgr) {
 // This checker should be enabled regardless of how language options are set.
 bool ento::shouldRegisterSecureBufferChecker(const LangOptions &LO) {
   return true;
+}
+
+// Returns true and sets LengthExpr if AttrExpr is a secure-buffer annotation
+bool SecureBufferChecker::isSecureBufferAttr(const Expr *AttrExpr,
+                                             const Expr *&LengthExpr) const {
+  if (const auto *CE = dyn_cast<CallExpr>(AttrExpr)) {
+    if (const FunctionDecl *FD = CE->getDirectCallee()) {
+      const IdentifierInfo *II = FD->getIdentifier();
+      if (II && II->getName().equals("secure_buffer")) {
+        LengthExpr = CE->getArg(0);
+        return true;
+      }
+    }
+  }
+
+  return false;
+}
+
+ProgramStateRef SecureBufferChecker::assumeSecureBufferAttr(
+    CheckerContext &C, ProgramStateRef state, const ParmVarDecl *Target,
+    const Expr *LengthExpr) const {
+  SValBuilder &SVB = C.getSValBuilder();
+  const auto *LCtx = C.getLocationContext();
+  const MemRegion *MR = state->getRegion(Target, LCtx);
+  SVal MRSVal = state->getSVal(MR);
+  MR = MRSVal.getAsRegion();
+  assert(MR);
+  const SubRegion *SR = dyn_cast<SubRegion>(MR);
+  assert(SR);
+  DefinedOrUnknownSVal SBLength =
+      getValueForExpr(C, state, SVB, LengthExpr, LCtx);
+  assert(!SBLength.isUnknown());
+  SVal SBLengthBytes =
+      elementCountToByteCount(C, SBLength, Target->getType()->getPointeeType());
+  state = state->set<SecureBufferLength>(MR, SBLengthBytes);
+  DefinedOrUnknownSVal extentMatchesSize = SVB.evalEQ(
+      state, SR->getExtent(SVB), SBLengthBytes.castAs<DefinedSVal>());
+  return state->assume(extentMatchesSize, true);
 }
 
 void SecureBufferChecker::checkSecureBufferAttr(const CallEvent &Call,

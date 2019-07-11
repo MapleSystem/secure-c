@@ -51,6 +51,12 @@ public:
   void checkBeginFunction(CheckerContext &C) const;
 
 private:
+  bool isValueRangeAttr(const Expr *AttrExpr, const Expr *&MinExpr,
+                        const Expr *&MaxExpr) const;
+  ProgramStateRef assumeValueRangeAttr(CheckerContext &C, ProgramStateRef state,
+                                       const ParmVarDecl *Target,
+                                       const Expr *MinExpr,
+                                       const Expr *MaxExpr) const;
   void checkValueRangeAttr(const CallEvent &Call, CheckerContext &C,
                            const ParmVarDecl *PVD, const Expr *MinExpr,
                            const Expr *MaxExpr, unsigned Idx) const;
@@ -157,14 +163,9 @@ void ValueRangeChecker::checkPreCall(const CallEvent &Call,
     // Process annotations
     for (Expr **APtr = SCInA->annotations_begin();
          APtr < SCInA->annotations_end(); APtr++) {
-      Expr *AExpr = *APtr;
-      if (const auto *CE = dyn_cast<CallExpr>(AExpr)) {
-        if (const FunctionDecl *FD = CE->getDirectCallee()) {
-          const IdentifierInfo *II = FD->getIdentifier();
-          if (II && II->getName().equals("value_range")) {
-            checkValueRangeAttr(Call, C, PVD, CE->getArg(0), CE->getArg(1), TI);
-          }
-        }
+      const Expr *MinExpr, *MaxExpr;
+      if (isValueRangeAttr(*APtr, MinExpr, MaxExpr)) {
+        checkValueRangeAttr(Call, C, PVD, MinExpr, MaxExpr, TI);
       }
     }
   }
@@ -189,14 +190,9 @@ void ValueRangeChecker::checkPostCall(const CallEvent &Call,
     // Process annotations
     for (Expr **APtr = SCInA->annotations_begin();
          APtr < SCInA->annotations_end(); APtr++) {
-      Expr *AExpr = *APtr;
-      if (const auto *CE = dyn_cast<CallExpr>(AExpr)) {
-        if (const FunctionDecl *FD = CE->getDirectCallee()) {
-          const IdentifierInfo *II = FD->getIdentifier();
-          if (II && II->getName().equals("value_range")) {
-            checkValueRangeAttr(Call, C, PVD, CE->getArg(0), CE->getArg(1), TI);
-          }
-        }
+      const Expr *MinExpr, *MaxExpr;
+      if (isValueRangeAttr(*APtr, MinExpr, MaxExpr)) {
+        checkValueRangeAttr(Call, C, PVD, MinExpr, MaxExpr, TI);
       }
     }
   }
@@ -204,7 +200,6 @@ void ValueRangeChecker::checkPostCall(const CallEvent &Call,
 
 void ValueRangeChecker::checkBeginFunction(CheckerContext &C) const {
   ProgramStateRef state = C.getState();
-  ASTContext &Context = C.getASTContext();
   const auto *LCtx = C.getLocationContext();
   const auto *FD = dyn_cast_or_null<FunctionDecl>(LCtx->getDecl());
   if (!FD)
@@ -215,27 +210,7 @@ void ValueRangeChecker::checkBeginFunction(CheckerContext &C) const {
     const ParmVarDecl *PVD = FD->getParamDecl(i);
 
     if (ValueRangeAttr *VRA = PVD->getAttr<ValueRangeAttr>()) {
-      // Find parameter variable's symbolic value
-      Loc ParamLoc = state->getLValue(PVD, LCtx);
-      DefinedOrUnknownSVal ParamValue = state->getSVal(ParamLoc, PVD->getType())
-                                            .castAs<DefinedOrUnknownSVal>();
-
-      Expr *MinExpr = VRA->getMin();
-      Expr *MaxExpr = VRA->getMax();
-
-      Expr::EvalResult MinExprResult;
-      if (!MinExpr->EvaluateAsInt(MinExprResult, Context)) {
-        llvm_unreachable("Minimum value is not an integer constant");
-      }
-      llvm::APSInt LoBound = MinExprResult.Val.getInt();
-
-      Expr::EvalResult MaxExprResult;
-      if (!MaxExpr->EvaluateAsInt(MaxExprResult, Context)) {
-        llvm_unreachable("Maximum value is not an integer constant");
-      }
-      llvm::APSInt HiBound = MaxExprResult.Val.getInt();
-
-      state = state->assumeInclusiveRange(ParamValue, LoBound, HiBound, true);
+      state = assumeValueRangeAttr(C, state, PVD, VRA->getMin(), VRA->getMax());
     }
   }
 
@@ -248,36 +223,9 @@ void ValueRangeChecker::checkBeginFunction(CheckerContext &C) const {
     // Process annotations
     for (Expr **APtr = SCInA->annotations_begin();
          APtr < SCInA->annotations_end(); APtr++) {
-      Expr *AExpr = *APtr;
-      if (const auto *CE = dyn_cast<CallExpr>(AExpr)) {
-        if (const FunctionDecl *FD = CE->getDirectCallee()) {
-          const IdentifierInfo *II = FD->getIdentifier();
-          if (II && II->getName().equals("value_range")) {
-            // Find parameter variable's symbolic value
-            Loc ParamLoc = state->getLValue(PVD, LCtx);
-            DefinedOrUnknownSVal ParamValue =
-                state->getSVal(ParamLoc, PVD->getType())
-                    .castAs<DefinedOrUnknownSVal>();
-
-            const Expr *MinExpr = CE->getArg(0);
-            const Expr *MaxExpr = CE->getArg(1);
-
-            Expr::EvalResult MinExprResult;
-            if (!MinExpr->EvaluateAsInt(MinExprResult, Context)) {
-              llvm_unreachable("Minimum value is not an integer constant");
-            }
-            llvm::APSInt LoBound = MinExprResult.Val.getInt();
-
-            Expr::EvalResult MaxExprResult;
-            if (!MaxExpr->EvaluateAsInt(MaxExprResult, Context)) {
-              llvm_unreachable("Maximum value is not an integer constant");
-            }
-            llvm::APSInt HiBound = MaxExprResult.Val.getInt();
-
-            state =
-                state->assumeInclusiveRange(ParamValue, LoBound, HiBound, true);
-          }
-        }
+      const Expr *MinExpr, *MaxExpr;
+      if (isValueRangeAttr(*APtr, MinExpr, MaxExpr)) {
+        state = assumeValueRangeAttr(C, state, PVD, MinExpr, MaxExpr);
       }
     }
   }
@@ -292,6 +240,49 @@ void ento::registerValueRangeChecker(CheckerManager &mgr) {
 // This checker should be enabled regardless of how language options are set.
 bool ento::shouldRegisterValueRangeChecker(const LangOptions &LO) {
   return true;
+}
+
+// Returns true and sets LengthExpr if AttrExpr is a secure-buffer annotation
+bool ValueRangeChecker::isValueRangeAttr(const Expr *AttrExpr,
+                                         const Expr *&MinExpr,
+                                         const Expr *&MaxExpr) const {
+  if (const auto *CE = dyn_cast<CallExpr>(AttrExpr)) {
+    if (const FunctionDecl *FD = CE->getDirectCallee()) {
+      const IdentifierInfo *II = FD->getIdentifier();
+      if (II && II->getName().equals("value_range")) {
+        MinExpr = CE->getArg(0);
+        MaxExpr = CE->getArg(1);
+        return true;
+      }
+    }
+  }
+
+  return false;
+}
+
+ProgramStateRef ValueRangeChecker::assumeValueRangeAttr(
+    CheckerContext &C, ProgramStateRef state, const ParmVarDecl *Target,
+    const Expr *MinExpr, const Expr *MaxExpr) const {
+  const auto *LCtx = C.getLocationContext();
+  ASTContext &Context = C.getASTContext();
+
+  // Find parameter variable's symbolic value
+  Loc ParamLoc = state->getLValue(Target, LCtx);
+  DefinedOrUnknownSVal ParamValue = state->getSVal(ParamLoc, Target->getType())
+                                        .castAs<DefinedOrUnknownSVal>();
+  Expr::EvalResult MinExprResult;
+  if (!MinExpr->EvaluateAsInt(MinExprResult, Context)) {
+    llvm_unreachable("Minimum value is not an integer constant");
+  }
+  llvm::APSInt LoBound = MinExprResult.Val.getInt();
+
+  Expr::EvalResult MaxExprResult;
+  if (!MaxExpr->EvaluateAsInt(MaxExprResult, Context)) {
+    llvm_unreachable("Maximum value is not an integer constant");
+  }
+  llvm::APSInt HiBound = MaxExprResult.Val.getInt();
+
+  return state->assumeInclusiveRange(ParamValue, LoBound, HiBound, true);
 }
 
 void ValueRangeChecker::checkValueRangeAttr(
