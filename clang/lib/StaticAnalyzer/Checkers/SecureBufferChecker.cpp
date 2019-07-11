@@ -274,6 +274,41 @@ void SecureBufferChecker::checkBeginFunction(CheckerContext &C) const {
     }
   }
 
+  // Process secure_c_in annotations, if any
+  for (auto *SCInA : FD->specific_attrs<SecureCInAttr>()) {
+    Expr *Target = SCInA->getTarget();
+    auto *DRE = cast<DeclRefExpr>(Target);
+    auto *PVD = cast<ParmVarDecl>(DRE->getDecl());
+
+    // Process annotations
+    for (Expr **APtr = SCInA->annotations_begin();
+         APtr < SCInA->annotations_end(); APtr++) {
+      Expr *AExpr = *APtr;
+      if (const auto *CE = dyn_cast<CallExpr>(AExpr)) {
+        if (const FunctionDecl *FD = CE->getDirectCallee()) {
+          const IdentifierInfo *II = FD->getIdentifier();
+          if (II && II->getName().equals("secure_buffer")) {
+            const MemRegion *MR = state->getRegion(PVD, LCtx);
+            SVal MRSVal = state->getSVal(MR);
+            MR = MRSVal.getAsRegion();
+            assert(MR);
+            const SubRegion *SR = dyn_cast<SubRegion>(MR);
+            assert(SR);
+            DefinedOrUnknownSVal SBLength =
+                getValueForExpr(C, state, SVB, CE->getArg(0), LCtx);
+            assert(!SBLength.isUnknown());
+            SVal SBLengthBytes = elementCountToByteCount(
+                C, SBLength, PVD->getType()->getPointeeType());
+            state = state->set<SecureBufferLength>(MR, SBLengthBytes);
+            DefinedOrUnknownSVal extentMatchesSize = SVB.evalEQ(
+                state, SR->getExtent(SVB), SBLengthBytes.castAs<DefinedSVal>());
+            state = state->assume(extentMatchesSize, true);
+          }
+        }
+      }
+    }
+  }
+
   C.addTransition(state);
 }
 
