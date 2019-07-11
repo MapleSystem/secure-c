@@ -1,16 +1,18 @@
-// RUN: %clang -fsyntax-only -Xclang -analyze \
+// RUN: %clang -fsyntax-only -I %S/../../../tools/secure-c/ \
+// RUN:   -Xclang -analyze \
 // RUN:   -Xclang -analyzer-config -Xclang ipa=none \
 // RUN:   -Xclang -analyzer-checker=unix.DynamicMemoryModeling \
 // RUN:   -Xclang -analyzer-checker=secure-c.ValueRange \
 // RUN:   -Xclang -analyzer-checker=secure-c.SecureBuffer -Xclang -verify %s
-#include<stdlib.h>
+#include <stdlib.h>
+#include <secure_c.h>
 
-int get(int *_Nonnull buf) __attribute__((secure_buffer(buf, 10)));
+int get(int *_Nonnull buf) __attribute__((secure_c_in(buf, secure_buffer(10))));
 
 int foo(int w, int x, int y, int z)
-    __attribute__((value_range(x, 10, 20),
-                   value_range(y, 5, 7),
-                   value_range(z, 5, 20))) {
+    __attribute__((secure_c_in(x, value_range(10, 20)),
+                   secure_c_in(y, value_range(5, 7)),
+                   secure_c_in(z, value_range(5, 20)))) {
   int A[10] = {0};
   get(A);
 
@@ -18,25 +20,30 @@ int foo(int w, int x, int y, int z)
   get(B);
 
   int C[5] = {0};
-  get(C); // expected-warning {{Buffer argument does not satisfy secure_buffer constraint}}
+  // expected-warning@+1 {{does not satisfy secure_buffer constraint}}
+  get(C);
 
   int *D = malloc(sizeof(int) * 10);
   get(D);
 
   int *E = malloc(sizeof(int) * 3);
-  get(E); // expected-warning {{Buffer argument does not satisfy secure_buffer constraint}}
+  // expected-warning@+1 {{does not satisfy secure_buffer constraint}}
+  get(E);
 
   int *F = malloc(sizeof(int) * w);
-  get(F); // expected-warning {{Buffer argument may not satisfy secure_buffer constraint}}
+  // expected-warning@+1 {{may not satisfy secure_buffer constraint}}
+  get(F);
 
   int *G = malloc(sizeof(int) * x);
   get(G);
 
   int *H = malloc(sizeof(int) * y);
-  get(H); // expected-warning {{Buffer argument does not satisfy secure_buffer constraint}}
+  // expected-warning@+1 {{does not satisfy secure_buffer constraint}}
+  get(H);
 
   int *I = malloc(sizeof(int) * z);
-  get(I); // expected-warning {{Buffer argument may not satisfy secure_buffer constraint}}
+  // expected-warning@+1 {{may not satisfy secure_buffer constraint}}
+  get(I);
 
   int *J = A;
   get(J);
@@ -45,7 +52,8 @@ int foo(int w, int x, int y, int z)
   get(K);
 
   int *L = C;
-  get(L); // expected-warning {{Buffer argument does not satisfy secure_buffer constraint}}
+  // expected-warning@+1 {{does not satisfy secure_buffer constraint}}
+  get(L);
 
   return 0;
 }
@@ -63,7 +71,7 @@ struct A {
   short s;
 };
 
-void f(char *_Nonnull buf) __attribute__((secure_buffer(buf, 10)));
+void f(char *_Nonnull buf) __attribute__((secure_c_in(buf, secure_buffer(10))));
 
 int bar() {
   char array[12];
@@ -72,36 +80,48 @@ int bar() {
   struct A a;
   f(&array[0]);
   f(array2d[0]);
-  f(a.info); // expected-warning {{Buffer argument does not satisfy secure_buffer constraint}}
-  f(&array[3]); // expected-warning {{Buffer argument does not satisfy secure_buffer constraint}}
-  f(&array2d[1][3]); // expected-warning {{Buffer argument does not satisfy secure_buffer constraint}}
-  f(s.info); // expected-warning {{Buffer argument does not satisfy secure_buffer constraint}}
-  f(s.tag); // expected-warning {{Buffer argument does not satisfy secure_buffer constraint}}
+  // expected-warning@+1 {{does not satisfy secure_buffer constraint}}
+  f(a.info);
+  // expected-warning@+1 {{does not satisfy secure_buffer constraint}}
+  f(&array[3]);
+  // expected-warning@+1 {{does not satisfy secure_buffer constraint}}
+  f(&array2d[1][3]);
+  // expected-warning@+1 {{does not satisfy secure_buffer constraint}}
+  f(s.info);
+  // expected-warning@+1 {{does not satisfy secure_buffer constraint}}
+  f(s.tag);
   return 0;
 }
 
-void baz(int *buf1, int *buf2, int *buf3, int *buf4,
-         unsigned int length3, unsigned int length4)
-    __attribute__((secure_buffer(buf1, 10), secure_buffer(buf2, 9),
-                   secure_buffer(buf3, length3), value_range(length3, 10, 20),
-                   secure_buffer(buf4, length4), value_range(length4, 0, 9))) {
+void baz(int *buf1, int *buf2, int *buf3, int *buf4, unsigned int length3,
+         unsigned int length4)
+    __attribute__((secure_c_in(buf1, secure_buffer(10)),
+                   secure_c_in(buf2, secure_buffer(9)),
+                   secure_c_in(buf3, secure_buffer(length3)),
+                   secure_c_in(length3, value_range(10, 20)),
+                   secure_c_in(buf4, secure_buffer(length4)),
+                   secure_c_in(length4, value_range(0, 9)))) {
   get(buf1);
-  get(buf2); // expected-warning {{Buffer argument does not satisfy secure_buffer constraint}}
+  // expected-warning@+1 {{does not satisfy secure_buffer constraint}}
+  get(buf2);
   get(buf3);
-  get(buf4); // expected-warning {{Buffer argument does not satisfy secure_buffer constraint}}
+  // expected-warning@+1 {{does not satisfy secure_buffer constraint}}
+  get(buf4);
 }
 
-int param_length_binop(int * _Nonnull buf, unsigned int x)
-    __attribute__((secure_buffer(buf, x*2+1),
-                   value_range(x, 0, 100)));
+int param_length_binop(int *_Nonnull buf, unsigned int x)
+    __attribute__((secure_c_in(buf, secure_buffer(x * 2 + 1)),
+                   secure_c_in(x, value_range(0, 100))));
 
-int param_length_cast(int * _Nonnull buf, int length)
-    __attribute__((secure_buffer(buf, (unsigned char) length)));
+int param_length_cast(int *_Nonnull buf, int length)
+    __attribute__((secure_c_in(buf, secure_buffer((unsigned char)length))));
 
 void complex_length_test() {
   int x[11];
   param_length_binop(x, 5);
-  param_length_binop(x, 7); // expected-warning {{Buffer argument does not satisfy secure_buffer constraint}}
+  // expected-warning@+1 {{does not satisfy secure_buffer constraint}}
+  param_length_binop(x, 7);
   param_length_cast(x, 11);
-  param_length_cast(x, 12); // expected-warning {{Buffer argument does not satisfy secure_buffer constraint}}
+  // expected-warning@+1 {{does not satisfy secure_buffer constraint}}
+  param_length_cast(x, 12);
 }
