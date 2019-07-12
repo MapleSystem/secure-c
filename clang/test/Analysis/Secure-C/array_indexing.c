@@ -2,6 +2,8 @@
 // RUN:   -Xclang -analyzer-config -Xclang ipa=none \
 // RUN:   -Xclang -analyzer-checker=secure-c.Nullability -Xclang -verify %s
 // expected-no-diagnostics
+#include <stdio.h>
+
 void foo() {
 	char *data = "abcde";
 	printf("%c", data[0]);
