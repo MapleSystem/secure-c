@@ -6431,29 +6431,7 @@ static void handleValueRange(Sema &S, Decl *D, const ParsedAttr &AL) {
 
 static bool checkSecureBuffer(Sema &S, Decl *D, const ParsedAttr &AL,
                               Expr *Buffer, const Expr *Length) {
-  const auto *FD = cast<FunctionDecl>(D);
-
-  if (!isa<DeclRefExpr>(Buffer)) {
-    S.Diag(Buffer->getExprLoc(), diag::err_attribute_argument_n_type)
-        << AL << 1 << AANT_ArgumentParamPointer;
-    return false;
-  }
-  auto *DRE = cast<DeclRefExpr>(Buffer);
-
-  if (!isa<ParmVarDecl>(DRE->getDecl())) {
-    S.Diag(Buffer->getExprLoc(), diag::err_attribute_argument_n_type)
-        << AL << 1 << AANT_ArgumentParamPointer;
-    return false;
-  }
-  auto *PVD = cast<ParmVarDecl>(DRE->getDecl());
-
-  if (PVD->getParentFunctionOrMethod() != FD) {
-    S.Diag(Buffer->getExprLoc(), diag::err_attribute_argument_n_type)
-        << AL << 1 << AANT_ArgumentParamPointer;
-    return false;
-  }
-
-  if (!PVD->getType()->isPointerType()) {
+  if (!Buffer->getType()->isPointerType()) {
     S.Diag(Buffer->getExprLoc(), diag::err_attribute_argument_n_type)
         << AL << 1 << AANT_ArgumentParamPointer;
     return false;
@@ -6485,10 +6463,6 @@ static void handleSecureBuffer(Sema &S, Decl *D, const ParsedAttr &AL) {
       new (S.Context) SecureBufferAttr(AL.getRange(), S.Context, Buffer, Length,
                                        AL.getAttributeSpellingListIndex());
   D->addAttr(SBA);
-
-  auto *DRE = cast<DeclRefExpr>(Buffer);
-  auto *PVD = cast<ParmVarDecl>(DRE->getDecl());
-  PVD->addAttr(SBA);
 }
 
 static bool checkUntrustedIn(Sema &S, Decl *D, const ParsedAttr &AL) {
