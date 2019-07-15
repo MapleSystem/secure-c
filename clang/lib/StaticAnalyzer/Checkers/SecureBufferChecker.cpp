@@ -65,12 +65,12 @@ public:
 private:
   bool isSecureBufferAttr(const Expr *AttrExpr, const Expr *&LengthExpr) const;
   ProgramStateRef assumeSecureBufferAttr(CheckerContext &C,
-                                         ProgramStateRef state,
-                                         const ParmVarDecl *Target,
+                                         ProgramStateRef state, SVal TargetVal,
+                                         QualType TargetType,
                                          const Expr *LengthExpr) const;
   void checkSecureBufferAttr(const CallEvent &Call, CheckerContext &C,
-                             const ParmVarDecl *PVD, const Expr *LExpr,
-                             unsigned Idx) const;
+                             SVal TargetVal, QualType TargetType,
+                             const Expr *LExpr) const;
 };
 
 } // end anonymous namespace
@@ -160,22 +160,24 @@ void SecureBufferChecker::checkPreCall(const CallEvent &Call,
     const ParmVarDecl *PVD = FD->getParamDecl(i);
 
     if (SecureBufferAttr *SBA = PVD->getAttr<SecureBufferAttr>()) {
-      checkSecureBufferAttr(Call, C, PVD, SBA->getLength(), i);
+      checkSecureBufferAttr(Call, C, Call.getArgSVal(i), PVD->getType(),
+                            SBA->getLength());
     }
   }
 
   // Process secure_c_in annotations, if any
   for (auto *SCInA : FD->specific_attrs<SecureCInAttr>()) {
     Expr *Target = SCInA->getTarget();
-    auto *DRE = cast<DeclRefExpr>(Target);
-    auto *PVD = cast<ParmVarDecl>(DRE->getDecl());
-    unsigned TI = PVD->getFunctionScopeIndex();
+
     // Process annotations
     for (Expr **APtr = SCInA->annotations_begin();
          APtr < SCInA->annotations_end(); APtr++) {
       const Expr *LengthExpr;
       if (isSecureBufferAttr(*APtr, LengthExpr)) {
-        checkSecureBufferAttr(Call, C, PVD, LengthExpr, TI);
+        checkSecureBufferAttr(
+            Call, C,
+            createSValForParamExpr(C.getSValBuilder(), C, Call, Target),
+            Target->getType(), LengthExpr);
       }
     }
   }
@@ -183,6 +185,8 @@ void SecureBufferChecker::checkPreCall(const CallEvent &Call,
 
 void SecureBufferChecker::checkPostCall(const CallEvent &Call,
                                         CheckerContext &C) const {
+  ProgramStateRef state = C.getState();
+
   const AnyFunctionCall *FC = dyn_cast<AnyFunctionCall>(&Call);
   if (!FC)
     return;
@@ -202,10 +206,16 @@ void SecureBufferChecker::checkPostCall(const CallEvent &Call,
          APtr < SCInA->annotations_end(); APtr++) {
       const Expr *LengthExpr;
       if (isSecureBufferAttr(*APtr, LengthExpr)) {
-        checkSecureBufferAttr(Call, C, PVD, LengthExpr, TI);
+        state = assumeSecureBufferAttr(
+            C, state,
+            createSValForParamExpr(C.getSValBuilder(), C, Call, Target),
+            Target->getType(), LengthExpr);
       }
     }
   }
+
+  if (state != C.getState())
+    C.addTransition(state);
 }
 
 // Upon accessing a memory location, check if it is within the secure-buffer
@@ -249,7 +259,11 @@ void SecureBufferChecker::checkBeginFunction(CheckerContext &C) const {
     const ParmVarDecl *PVD = FD->getParamDecl(i);
 
     if (SecureBufferAttr *SBA = PVD->getAttr<SecureBufferAttr>()) {
-      state = assumeSecureBufferAttr(C, state, PVD, SBA->getLength());
+      const MemRegion *MR = state->getRegion(PVD, LCtx);
+      SVal TargetVal =
+          state->getSVal(MR, PVD->getType()).castAs<DefinedOrUnknownSVal>();
+      state = assumeSecureBufferAttr(C, state, TargetVal, PVD->getType(),
+                                     SBA->getLength());
     }
   }
 
@@ -264,13 +278,53 @@ void SecureBufferChecker::checkBeginFunction(CheckerContext &C) const {
          APtr < SCInA->annotations_end(); APtr++) {
       const Expr *LengthExpr;
       if (isSecureBufferAttr(*APtr, LengthExpr)) {
-        state = assumeSecureBufferAttr(C, state, PVD, LengthExpr);
+        state = assumeSecureBufferAttr(
+            C, state,
+            getValueForExpr(C, state, C.getSValBuilder(), Target, LCtx),
+            Target->getType(), LengthExpr);
       }
     }
   }
 
-  C.addTransition(state);
+  if (state != C.getState())
+    C.addTransition(state);
 }
+
+// void SecureBufferChecker::checkEndFunction(const ReturnStmt *S,
+//                                            CheckerContext &C) const {
+//   ProgramStateRef state = C.getState();
+//   const auto *LCtx = C.getLocationContext();
+//   const auto *FD = dyn_cast_or_null<FunctionDecl>(LCtx->getDecl());
+//   if (!FD)
+//     return;
+
+//   // Process secure_c_out annotations, if any
+//   for (auto *SCInA : FD->specific_attrs<SecureCOutAttr>()) {
+//     const Expr *Target = SCInA->getTarget();
+//     // Replace DRE to function with return expression
+//     if (isa<DeclRefExpr>(Target)) {
+//       auto *DRE = cast<DeclRefExpr>(Target);
+//       if (isa<FunctionDecl>(DRE->getDecl())) {
+//         llvm::errs() << "GOT A FUNCDECL\n";
+//         Target = S->getRetValue();
+//       }
+//     }
+//     auto *DRE = cast<DeclRefExpr>(Target);
+//     auto *PVD = cast<ParmVarDecl>(DRE->getDecl());
+
+//     // Process annotations
+//     for (Expr **APtr = SCInA->annotations_begin();
+//          APtr < SCInA->annotations_end(); APtr++) {
+//       const Expr *LengthExpr;
+//       if (isSecureBufferAttr(*APtr, LengthExpr)) {
+//         state = assumeSecureBufferAttr(C, state, PVD, LengthExpr);
+//       }
+//     }
+//   }
+
+//   if (state != C.getState())
+//     C.addTransition(state);
+// }
 
 // Ensure that the length expressions are kept live
 void SecureBufferChecker::checkLiveSymbols(ProgramStateRef state,
@@ -350,13 +404,11 @@ bool SecureBufferChecker::isSecureBufferAttr(const Expr *AttrExpr,
 }
 
 ProgramStateRef SecureBufferChecker::assumeSecureBufferAttr(
-    CheckerContext &C, ProgramStateRef state, const ParmVarDecl *Target,
-    const Expr *LengthExpr) const {
+    CheckerContext &C, ProgramStateRef state, SVal TargetVal,
+    QualType TargetType, const Expr *LengthExpr) const {
   SValBuilder &SVB = C.getSValBuilder();
   const auto *LCtx = C.getLocationContext();
-  const MemRegion *MR = state->getRegion(Target, LCtx);
-  SVal MRSVal = state->getSVal(MR);
-  MR = MRSVal.getAsRegion();
+  const MemRegion *MR = TargetVal.getAsRegion();
   assert(MR);
   const SubRegion *SR = dyn_cast<SubRegion>(MR);
   assert(SR);
@@ -364,7 +416,7 @@ ProgramStateRef SecureBufferChecker::assumeSecureBufferAttr(
       getValueForExpr(C, state, SVB, LengthExpr, LCtx);
   assert(!SBLength.isUnknown());
   SVal SBLengthBytes =
-      elementCountToByteCount(C, SBLength, Target->getType()->getPointeeType());
+      elementCountToByteCount(C, SBLength, TargetType->getPointeeType());
   state = state->set<SecureBufferLength>(MR, SBLengthBytes);
   DefinedOrUnknownSVal extentMatchesSize = SVB.evalEQ(
       state, SR->getExtent(SVB), SBLengthBytes.castAs<DefinedSVal>());
@@ -373,17 +425,16 @@ ProgramStateRef SecureBufferChecker::assumeSecureBufferAttr(
 
 void SecureBufferChecker::checkSecureBufferAttr(const CallEvent &Call,
                                                 CheckerContext &C,
-                                                const ParmVarDecl *PVD,
-                                                const Expr *LExpr,
-                                                unsigned Idx) const {
+                                                SVal TargetVal,
+                                                QualType TargetType,
+                                                const Expr *LExpr) const {
   SValBuilder &SVB = C.getSValBuilder();
   ProgramStateRef state = C.getState();
-  // Param is known to be a pointer type already, so this is safe
-  QualType elemType = PVD->getType()->getPointeeType();
-  SVal ArgVal = Call.getArgSVal(Idx);
-  DefinedOrUnknownSVal Length = getBufferLength(C, SVB, ArgVal);
+  // Target is known to be a pointer type already, so this is safe
+  QualType elemType = TargetType->getPointeeType();
+  DefinedOrUnknownSVal Length = getBufferLength(C, SVB, TargetVal);
   if (Length.isUnknown()) {
-    reportBug(C, MayBreakConstraint, Call.getArgExpr(Idx));
+    reportBug(C, MayBreakConstraint, Call.getOriginExpr());
     return;
   }
 
@@ -397,8 +448,8 @@ void SecureBufferChecker::checkSecureBufferAttr(const CallEvent &Call,
       state->assume(InRange.castAs<DefinedOrUnknownSVal>());
 
   if (StOutBound && !StInBound) {
-    reportBug(C, BreaksConstraint, Call.getArgExpr(Idx));
+    reportBug(C, BreaksConstraint, Call.getOriginExpr());
   } else if ((bool)StInBound == (bool)StOutBound) {
-    reportBug(C, MayBreakConstraint, Call.getArgExpr(Idx));
+    reportBug(C, MayBreakConstraint, Call.getOriginExpr());
   }
 }

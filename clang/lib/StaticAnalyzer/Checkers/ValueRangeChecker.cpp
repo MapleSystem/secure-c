@@ -38,7 +38,7 @@ class ValueRangeChecker
   enum ValueRangeResult { VRUndefined, VRInRange, VROutOfRange };
 
   ValueRangeResult isInValueRange(SValBuilder &SVB, CheckerContext &C,
-                                  const CallEvent &Call, const Expr *TargetExpr,
+                                  const CallEvent &Call, QualType Ty,
                                   SVal Target, const Expr *MinExpr,
                                   const Expr *MaxExpr) const;
 
@@ -54,12 +54,12 @@ private:
   bool isValueRangeAttr(const Expr *AttrExpr, const Expr *&MinExpr,
                         const Expr *&MaxExpr) const;
   ProgramStateRef assumeValueRangeAttr(CheckerContext &C, ProgramStateRef state,
-                                       const ParmVarDecl *Target,
+                                       SVal TargetVal, QualType TargetType,
                                        const Expr *MinExpr,
                                        const Expr *MaxExpr) const;
   void checkValueRangeAttr(const CallEvent &Call, CheckerContext &C,
-                           const ParmVarDecl *PVD, const Expr *MinExpr,
-                           const Expr *MaxExpr, unsigned Idx) const;
+                           SVal TargetVal, QualType TargetType,
+                           const Expr *MinExpr, const Expr *MaxExpr) const;
 };
 
 } // end anonymous namespace
@@ -91,13 +91,9 @@ void ValueRangeChecker::reportError(CheckerContext &C, const Expr *Arg) const {
   }
 }
 
-ValueRangeChecker::ValueRangeResult
-ValueRangeChecker::isInValueRange(SValBuilder &SVB, CheckerContext &C,
-                                  const CallEvent &Call, const Expr *TargetExpr,
-                                  SVal Target, const Expr *MinExpr,
-                                  const Expr *MaxExpr) const {
-  QualType Ty = TargetExpr->getType();
-
+ValueRangeChecker::ValueRangeResult ValueRangeChecker::isInValueRange(
+    SValBuilder &SVB, CheckerContext &C, const CallEvent &Call, QualType Ty,
+    SVal Target, const Expr *MinExpr, const Expr *MaxExpr) const {
   SVal Min = createSValForParamExpr(SVB, C, Call, MinExpr);
   assert(!Min.isUnknownOrUndef());
   SVal Max = createSValForParamExpr(SVB, C, Call, MaxExpr);
@@ -150,22 +146,24 @@ void ValueRangeChecker::checkPreCall(const CallEvent &Call,
     const ParmVarDecl *PVD = FD->getParamDecl(i);
 
     if (ValueRangeAttr *VRA = PVD->getAttr<ValueRangeAttr>()) {
-      checkValueRangeAttr(Call, C, PVD, VRA->getMin(), VRA->getMax(), i);
+      checkValueRangeAttr(Call, C, Call.getArgSVal(i), PVD->getType(),
+                          VRA->getMin(), VRA->getMax());
     }
   }
 
   // Process secure_c_in annotations, if any
   for (auto *SCInA : FD->specific_attrs<SecureCInAttr>()) {
     Expr *Target = SCInA->getTarget();
-    auto *DRE = cast<DeclRefExpr>(Target);
-    auto *PVD = cast<ParmVarDecl>(DRE->getDecl());
-    unsigned TI = PVD->getFunctionScopeIndex();
+
     // Process annotations
     for (Expr **APtr = SCInA->annotations_begin();
          APtr < SCInA->annotations_end(); APtr++) {
       const Expr *MinExpr, *MaxExpr;
       if (isValueRangeAttr(*APtr, MinExpr, MaxExpr)) {
-        checkValueRangeAttr(Call, C, PVD, MinExpr, MaxExpr, TI);
+        checkValueRangeAttr(
+            Call, C,
+            createSValForParamExpr(C.getSValBuilder(), C, Call, Target),
+            Target->getType(), MinExpr, MaxExpr);
       }
     }
   }
@@ -184,15 +182,16 @@ void ValueRangeChecker::checkPostCall(const CallEvent &Call,
   // Process secure_c_out annotations, if any
   for (auto *SCInA : FD->specific_attrs<SecureCOutAttr>()) {
     Expr *Target = SCInA->getTarget();
-    auto *DRE = cast<DeclRefExpr>(Target);
-    auto *PVD = cast<ParmVarDecl>(DRE->getDecl());
-    unsigned TI = PVD->getFunctionScopeIndex();
+
     // Process annotations
     for (Expr **APtr = SCInA->annotations_begin();
          APtr < SCInA->annotations_end(); APtr++) {
       const Expr *MinExpr, *MaxExpr;
       if (isValueRangeAttr(*APtr, MinExpr, MaxExpr)) {
-        checkValueRangeAttr(Call, C, PVD, MinExpr, MaxExpr, TI);
+        checkValueRangeAttr(
+            Call, C,
+            createSValForParamExpr(C.getSValBuilder(), C, Call, Target),
+            Target->getType(), MinExpr, MaxExpr);
       }
     }
   }
@@ -210,22 +209,27 @@ void ValueRangeChecker::checkBeginFunction(CheckerContext &C) const {
     const ParmVarDecl *PVD = FD->getParamDecl(i);
 
     if (ValueRangeAttr *VRA = PVD->getAttr<ValueRangeAttr>()) {
-      state = assumeValueRangeAttr(C, state, PVD, VRA->getMin(), VRA->getMax());
+      const MemRegion *MR = state->getRegion(PVD, LCtx);
+      SVal TargetVal =
+          state->getSVal(MR, PVD->getType()).castAs<DefinedOrUnknownSVal>();
+      state = assumeValueRangeAttr(C, state, TargetVal, PVD->getType(),
+                                   VRA->getMin(), VRA->getMax());
     }
   }
 
   // Process secure_c_in annotations, if any
   for (auto *SCInA : FD->specific_attrs<SecureCInAttr>()) {
     Expr *Target = SCInA->getTarget();
-    auto *DRE = cast<DeclRefExpr>(Target);
-    auto *PVD = cast<ParmVarDecl>(DRE->getDecl());
 
     // Process annotations
     for (Expr **APtr = SCInA->annotations_begin();
          APtr < SCInA->annotations_end(); APtr++) {
       const Expr *MinExpr, *MaxExpr;
       if (isValueRangeAttr(*APtr, MinExpr, MaxExpr)) {
-        state = assumeValueRangeAttr(C, state, PVD, MinExpr, MaxExpr);
+        state = assumeValueRangeAttr(
+            C, state,
+            getValueForExpr(C, state, C.getSValBuilder(), Target, LCtx),
+            Target->getType(), MinExpr, MaxExpr);
       }
     }
   }
@@ -261,15 +265,10 @@ bool ValueRangeChecker::isValueRangeAttr(const Expr *AttrExpr,
 }
 
 ProgramStateRef ValueRangeChecker::assumeValueRangeAttr(
-    CheckerContext &C, ProgramStateRef state, const ParmVarDecl *Target,
-    const Expr *MinExpr, const Expr *MaxExpr) const {
-  const auto *LCtx = C.getLocationContext();
+    CheckerContext &C, ProgramStateRef state, SVal TargetVal,
+    QualType TargetType, const Expr *MinExpr, const Expr *MaxExpr) const {
   ASTContext &Context = C.getASTContext();
 
-  // Find parameter variable's symbolic value
-  Loc ParamLoc = state->getLValue(Target, LCtx);
-  DefinedOrUnknownSVal ParamValue = state->getSVal(ParamLoc, Target->getType())
-                                        .castAs<DefinedOrUnknownSVal>();
   Expr::EvalResult MinExprResult;
   if (!MinExpr->EvaluateAsInt(MinExprResult, Context)) {
     llvm_unreachable("Minimum value is not an integer constant");
@@ -282,20 +281,22 @@ ProgramStateRef ValueRangeChecker::assumeValueRangeAttr(
   }
   llvm::APSInt HiBound = MaxExprResult.Val.getInt();
 
-  return state->assumeInclusiveRange(ParamValue, LoBound, HiBound, true);
+  return state->assumeInclusiveRange(TargetVal.castAs<DefinedOrUnknownSVal>(),
+                                     LoBound, HiBound, true);
 }
 
-void ValueRangeChecker::checkValueRangeAttr(
-    const CallEvent &Call, CheckerContext &C, const ParmVarDecl *PVD,
-    const Expr *MinExpr, const Expr *MaxExpr, unsigned Idx) const {
+void ValueRangeChecker::checkValueRangeAttr(const CallEvent &Call,
+                                            CheckerContext &C, SVal TargetVal,
+                                            QualType TargetType,
+                                            const Expr *MinExpr,
+                                            const Expr *MaxExpr) const {
   SValBuilder &SVB = C.getSValBuilder();
   ValueRangeResult Result =
-      isInValueRange(SVB, C, Call, Call.getArgExpr(Idx), Call.getArgSVal(Idx),
-                     MinExpr, MaxExpr);
+      isInValueRange(SVB, C, Call, TargetType, TargetVal, MinExpr, MaxExpr);
 
   if (Result == VROutOfRange) {
-    reportError(C, Call.getArgExpr(Idx));
+    reportError(C, Call.getOriginExpr());
   } else if (Result == VRUndefined) {
-    reportWarning(C, Call.getArgExpr(Idx));
+    reportWarning(C, Call.getOriginExpr());
   }
 }
