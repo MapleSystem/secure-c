@@ -31,11 +31,6 @@ int unannotated(int *_Nonnull buf) {
   return buf[3]; // expected-warning {{Buffer access may be out of bounds}}
 }
 
-int safe_range(int *_Nonnull buf, int idx)
-    __attribute__((secure_buffer(buf, 10), value_range(idx, 0, 9))) {
-  return buf[idx];
-}
-
 int unknown_range(int *_Nonnull buf, int idx)
     __attribute__((secure_c_in(buf, secure_buffer(10)))) {
   return buf[idx]; // expected-warning {{Buffer access may be out of bounds}}
@@ -45,18 +40,6 @@ int maybe_out_of_range(int *_Nonnull buf, int idx)
     __attribute__((secure_c_in(buf, secure_buffer(10)),
                    secure_c_in(idx, value_range(0, 10)))) {
   return buf[idx]; // expected-warning {{Buffer access may be out of bounds}}
-}
-
-int out_of_range(int *_Nonnull buf, int idx)
-    __attribute__((secure_c_in(buf, secure_buffer(10)),
-                   secure_c_in(idx, value_range(10, 20)))) {
-  return buf[idx]; // expected-warning {{Buffer access is out of bounds}}
-}
-
-int param_length_binop(int *_Nonnull buf, unsigned int x)
-    __attribute__((secure_c_in(buf, secure_buffer(x * 2 + 1)),
-                   secure_c_in(x, value_range(0, 100)))) {
-  return buf[0];
 }
 
 int param_length_cast(int *_Nonnull buf, int length)
