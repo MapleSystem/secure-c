@@ -62,30 +62,38 @@ SVal createSValForParamExpr(SValBuilder &SVB, CheckerContext &C,
                          C.getLocationContext(), &Call);
 }
 
-static const SubRegion *getBaseRegion(CheckerContext &C, ProgramStateRef State,
-                                      const Expr *E, const LocationContext *Loc,
-                                      const CallEvent *Call) {
+static std::pair<const SubRegion *, Store>
+getBaseRegion(CheckerContext &C, ProgramStateRef State, const Expr *E,
+              const LocationContext *Loc, const CallEvent *Call) {
   if (const DeclRefExpr *DRE = dyn_cast<DeclRefExpr>(E)) {
     if (Call) {
       if (const ParmVarDecl *PVD =
               dyn_cast_or_null<ParmVarDecl>(DRE->getDecl())) {
-        return dyn_cast<SubRegion>(
-            Call->getArgSVal(PVD->getFunctionScopeIndex()).getAsRegion());
+        SVal ArgSVal = Call->getArgSVal(PVD->getFunctionScopeIndex());
+        if (auto LV = ArgSVal.getAs<nonloc::LazyCompoundVal>()) {
+          const LazyCompoundValData *D = LV->getCVData();
+          return std::pair<const SubRegion *, Store>(D->getRegion(),
+                                                     D->getStore());
+        }
+        return std::pair<const SubRegion *, Store>(
+            dyn_cast<SubRegion>(ArgSVal.getAsRegion()), NULL);
       }
     }
 
     if (const VarDecl *VD = dyn_cast_or_null<VarDecl>(DRE->getDecl()))
-      return State->getRegion(VD, Loc);
+      return std::pair<const SubRegion *, Store>(State->getRegion(VD, Loc),
+                                                 NULL);
   } else if (const MemberExpr *ME = dyn_cast<MemberExpr>(E)) {
-    const SubRegion *SR = getBaseRegion(
+    std::pair<const SubRegion *, Store> RSPair = getBaseRegion(
         C, State, ME->getBase()->IgnoreParenImpCasts(), Loc, Call);
+    const SubRegion *SR = std::get<0>(RSPair);
     const FieldRegion *FR =
         C.getStoreManager().getRegionManager().getFieldRegion(
             dyn_cast<FieldDecl>(ME->getMemberDecl()), SR);
-    return FR;
+    return std::pair<const SubRegion *, Store>(FR, std::get<1>(RSPair));
   }
 
-  return NULL;
+  return std::pair<const SubRegion *, Store>(NULL, NULL);
 }
 
 DefinedOrUnknownSVal getValueForExpr(CheckerContext &C, ProgramStateRef State,
@@ -115,13 +123,19 @@ DefinedOrUnknownSVal getValueForExpr(CheckerContext &C, ProgramStateRef State,
                    BO->getType())
         .castAs<DefinedOrUnknownSVal>();
   } else if (const MemberExpr *ME = dyn_cast<MemberExpr>(E)) {
-    const SubRegion *SR = getBaseRegion(
+    std::pair<const SubRegion *, Store> RSPair = getBaseRegion(
         C, State, ME->getBase()->IgnoreParenImpCasts(), Loc, Call);
+    const SubRegion *SR = std::get<0>(RSPair);
     const ValueDecl *VD = ME->getMemberDecl();
     const FieldRegion *FR =
         C.getStoreManager().getRegionManager().getFieldRegion(
             cast<FieldDecl>(VD), SR);
     SVal Val = State->getSVal(FR, ME->getType());
+    if (Val.isUndef()) {
+      const SVal &V = C.getStoreManager().getBinding(std::get<1>(RSPair),
+                                                     loc::MemRegionVal(FR));
+      return V.castAs<DefinedOrUnknownSVal>();
+    }
     return Val.castAs<DefinedOrUnknownSVal>();
   } else if (const CastExpr *CE = dyn_cast<CastExpr>(E)) {
     return SVB
