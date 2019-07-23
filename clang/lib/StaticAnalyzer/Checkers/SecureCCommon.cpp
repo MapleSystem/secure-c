@@ -80,9 +80,18 @@ getBaseRegion(CheckerContext &C, ProgramStateRef State, const Expr *E,
       }
     }
 
-    if (const VarDecl *VD = dyn_cast_or_null<VarDecl>(DRE->getDecl()))
-      return std::pair<const SubRegion *, Store>(State->getRegion(VD, Loc),
-                                                 NULL);
+    if (const VarDecl *VD = dyn_cast_or_null<VarDecl>(DRE->getDecl())) {
+      SVal RegVal =
+          C.getSValBuilder().getRegionValueSymbolVal(State->getRegion(VD, Loc));
+      const MemRegion *RVM = RegVal.getAsRegion();
+      if (RVM) {
+        return std::pair<const SubRegion *, Store>(dyn_cast<SubRegion>(RVM),
+                                                   NULL);
+      }
+
+      return std::pair<const SubRegion *, Store>(
+          dyn_cast<SubRegion>(State->getRegion(VD, Loc)), NULL);
+    }
   } else if (const MemberExpr *ME = dyn_cast<MemberExpr>(E)) {
     std::pair<const SubRegion *, Store> RSPair = getBaseRegion(
         C, State, ME->getBase()->IgnoreParenImpCasts(), Loc, Call);
@@ -134,8 +143,15 @@ DefinedOrUnknownSVal getValueForExpr(CheckerContext &C, ProgramStateRef State,
     if (Val.isUndef()) {
       const SVal &V = C.getStoreManager().getBinding(std::get<1>(RSPair),
                                                      loc::MemRegionVal(FR));
-      return V.castAs<DefinedOrUnknownSVal>();
+      if (V.isValid())
+        return V.castAs<DefinedSVal>();
+
+      llvm::errs() << "Failed to find a value for ";
+      FR->dump();
+      llvm::errs() << "\n";
+      return UnknownVal();
     }
+
     return Val.castAs<DefinedOrUnknownSVal>();
   } else if (const CastExpr *CE = dyn_cast<CastExpr>(E)) {
     return SVB

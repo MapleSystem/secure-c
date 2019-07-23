@@ -1,8 +1,6 @@
 // RUN: %clang -fsyntax-only -I%S/../../../tools/secure-c -Xclang -analyze \
 // RUN:   -Xclang -analyzer-config -Xclang ipa=none \
 // RUN:   -Xclang -analyzer-checker=secure-c.Nullability -Xclang -verify %s
-// This test is expected to fail until #183 is resolved
-// XFAIL: *
 #include <secure_c.h>
 
 typedef struct foo {
