@@ -73,13 +73,15 @@ public:
 
 } // end of anonymous namespace
 
-LLVM_DUMP_METHOD static void debug_error(CheckerContext &C, const Stmt *S, SVal Val) {
+LLVM_DUMP_METHOD static void debug_error(CheckerContext &C, const Stmt *S,
+                                         SVal Val) {
   llvm::errs() << "Stmt with error:\n";
   S->dump();
   llvm::errs() << "Val: ";
   Val.dump();
-  llvm::errs() << "\n";
-  C.getState()->getConstraintManager().print(C.getState(), llvm::errs(), "\n", "");
+  llvm::errs() << "\nSymbol: " << Val.getAsSymbol() << "\n";
+  C.getState()->getConstraintManager().print(C.getState(), llvm::errs(), "\n",
+                                             "");
 }
 
 void SecureCNullabilityChecker::reportBug(CheckerContext &C,
